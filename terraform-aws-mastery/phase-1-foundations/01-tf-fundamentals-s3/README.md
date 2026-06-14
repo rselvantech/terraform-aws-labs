@@ -454,26 +454,60 @@ This is not a Terraform bug. It is AWS S3's eventual consistency model.
 
 **What breaks with local state in a team:**
 
+Before you see why local state breaks for teams, understand what state
+is at this point in the demo.
+
+When you ran `terraform apply` in Part A, Terraform created
+`terraform.tfstate` on your local machine. This is Terraform's memory —
+it records every resource Terraform created and all their attributes.
+Every future plan reads this file to know what already exists. Without
+it, Terraform has no memory of what it built.
+
+Now imagine a two-engineer team:
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  SCENARIO: Two engineers, local state                                   │
-│                                                                          │
-│  Engineer A runs terraform apply at 2pm.                                │
-│  State on A's machine: vpc=vpc-111, subnet=subnet-222                   │
-│                                                                          │
-│  Engineer B's machine has a copy of state from yesterday.               │
-│  State on B's machine: vpc=vpc-111 (no subnet yet)                      │
-│                                                                          │
-│  Engineer B runs terraform apply at 2:05pm.                             │
-│  B's Terraform compares desired state against B's STALE state.          │
-│  B's plan says subnet-222 does not exist → creates a second subnet.     │
-│  Now there are TWO subnets. State on B's machine says one exists.       │
-│  State on A's machine says one exists. Both are wrong.                  │
-│                                                                          │
-│  Next engineer to apply will create a THIRD subnet.                     │
-│  Production infrastructure diverges silently.                           │
+│  DAY 1                                                                  │
+│                                                                         │
+│  Engineer A creates main.tf with one S3 bucket and runs apply.         │
+│  AWS: bucket-A exists                                                   │
+│  A's state: "I manage bucket-A"                                        │
+│                                                                         │
+│  Engineer A shares main.tf with Engineer B via Git.                    │
+│  Git has the code. Git does NOT have the state file.                   │
+│  (.gitignore correctly excludes terraform.tfstate)                     │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DAY 2                                                                  │
+│                                                                         │
+│  Engineer B clones the repo, adds a second S3 bucket to main.tf,      │
+│  and runs terraform apply.                                              │
+│                                                                         │
+│  B has no state file — Terraform starts with empty state.              │
+│  B's plan: desired = 2 buckets, known existing = 0 buckets.            │
+│  B's Terraform tries to CREATE BOTH buckets.                           │
+│                                                                         │
+│  bucket-A already exists in AWS → BucketAlreadyExists error            │
+│  OR bucket-A has a random suffix → B creates a duplicate with          │
+│  a different suffix. Now two "bucket-A equivalent" buckets exist.      │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  RESULT                                                                 │
+│                                                                         │
+│  A's state says: I manage 1 bucket (the original)                     │
+│  B's state says: I manage 2 buckets (including a duplicate)            │
+│  AWS reality:    2 or more buckets exist, partially orphaned           │
+│                                                                         │
+│  Neither engineer can safely run terraform destroy.                    │
+│  Neither engineer knows what the other manages.                        │
+│  The infrastructure is now impossible to reason about.                 │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+With **remote state**, both engineers read and write the same
+`terraform.tfstate` file in S3. B's plan on Day 2 would correctly show:
+desired = 2 buckets, known existing = 1 bucket → creates only the new one.
+State locking ensures A and B cannot apply simultaneously.
 
 **Remote state solves this:**
 
@@ -592,12 +626,20 @@ The `backend "s3"` block lives inside a `terraform {}` block — in
 
 | Argument | Required | Description |
 |---|---|---|
-| `bucket` | Yes | Name of the S3 bucket that stores the state file |
-| `key` | Yes | Path within the bucket: `phase/demo/terraform.tfstate`. Like a folder+filename inside the bucket. |
-| `region` | Yes | AWS region of the state bucket |
-| `profile` | No | Named AWS profile to authenticate with |
-| `encrypt` | No (default: `false`) | Encrypt the state file at rest in S3 |
-| `use_lockfile` | No (default: `false`) | Enable S3 native locking — creates `.tflock` file. No DynamoDB needed. |
+| `bucket` | **Yes** | Name of the S3 bucket that stores the state file |
+| `key` | **Yes** | Path within the bucket: `phase/demo/terraform.tfstate` |
+| `region` | **Yes** | AWS region of the state bucket — mandatory, S3 is regional |
+| `profile` | No | Named AWS profile. If omitted, falls back to default credential chain |
+| `encrypt` | No (default: `false`) | Encrypt state file at rest in S3 |
+| `use_lockfile` | No (default: `false`) | S3 native locking — creates `.tflock` file |
+
+> **Can backend arguments use Terraform variables?**
+> **No.** The backend block is evaluated before variables are loaded —
+> before any provider initialises. Using `var.aws_region` in a backend block
+> errors: `Variables may not be used here`. This is why `backend.tf` always
+> has hardcoded values. The production solution for teams is **partial backend
+> configuration** — pass dynamic values via `-backend-config` flags or a
+> `.tfbackend` file. This is covered in tf-complete-guide Demo 04.
 
 ---
 
@@ -1158,16 +1200,30 @@ Terraform has been successfully initialized!
 - The S3 copy is now the authoritative state
 - Your local `terraform.tfstate` is a stale backup — not used anymore
 
-**Verify the state file in Console:**
+
+**Verify the migrated state in Console:**
 
 ```
 Console → S3 → tfstate-cloudnova-163125980376-us-east-2
   → Browse: phase-1/ → 01-tf-fundamentals-s3/
-  → terraform.tfstate ✅  (the migrated state file)
+  → Enable "Show versions" toggle (top right of Objects tab)
 
-Click terraform.tfstate → Object actions → Open
-  → You can read the JSON — see all 5 resources recorded
+You will see three objects:
+  terraform.tfstate          ← the current state file (7-8 KB) ✅
+  terraform.tfstate.tflock   ← the actual lock file (283 bytes) ✅
+  terraform.tfstate.tflock   ← a Delete marker (0 bytes) ✅
 ```
+
+**Why the delete marker?**
+The lock file was created at the start of the migration, then deleted
+when it completed. Because the state bucket has versioning enabled,
+S3 does not permanently delete objects — it adds a delete marker instead.
+This is expected behaviour, not an error.
+The delete marker is S3's version history of the lock lifecycle.
+
+
+Click `terraform.tfstate` → Object actions → Open to read the JSON —
+all 5 resources are recorded inside.
 
 **Verify state versioning:**
 
@@ -1245,7 +1301,7 @@ actually exists in AWS. Let's make it tangible.
 **Introduce drift in Console:**
 
 ```
-Console → S3 → cloudnova-dev-app-xxxxxxxx
+Console → S3 → General purpose buckets → cloudnova-dev-app-xxxxxxxx
   → Properties tab → Tags → Edit
   → Add tag: Key = ManualTag, Value = added-outside-terraform
   → Save changes
@@ -1255,9 +1311,27 @@ Console → S3 → cloudnova-dev-app-xxxxxxxx
 
 ### Step 14 — Detect the drift
 
+**Two ways to see drift — understanding the difference:**
+
+Regular `terraform plan` also detects drift. It calls the provider Read()
+API on every managed resource, compares to state, and shows manual changes
+as `~` updates in the plan. If you run `terraform apply` from here,
+Terraform removes the manual tag AND applies any other pending config changes.
+
+`terraform plan -refresh-only` shows drift **only** — it isolates the drift
+detection from any config changes you may have pending. It asks: "do you
+want to update state to match reality?" without applying .tf file changes.
+Useful when you want to accept drift (keep the manual change in state) rather
+than reconcile it.
+
+**For this demo:** we use `-refresh-only` to isolate the drift detection concept,
+then regular `terraform apply` to reconcile.
+
+
 ```bash
 # Reads actual AWS state, compares to .tfstate, shows what changed
 # Makes ZERO changes to infrastructure or state
+# Shows ONLY what changed outside Terraform — no config changes included
 terraform plan -refresh-only
 ```
 
