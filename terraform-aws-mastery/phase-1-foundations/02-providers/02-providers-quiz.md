@@ -1,4 +1,4 @@
-# Demo 02 — Quiz
+# Quiz — Demo 02: Providers: Configuration, Versioning, and the Lock File
 
 > TA-004 exam style. One correct answer unless stated otherwise.
 > Target: 80% or above before moving to Demo 03.

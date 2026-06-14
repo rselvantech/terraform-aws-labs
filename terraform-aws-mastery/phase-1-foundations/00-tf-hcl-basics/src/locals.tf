@@ -6,7 +6,7 @@ locals {
   # Level 2 — composite values built from level 1
   # random_string.suffix.result is a resource attribute reference
   # this shows cross-resource referencing — the file depends on the random string
-  filename = "${local.project}-${local.environment}-${random_string.suffix.result}.txt"
+  filename    = "${local.project}-${local.environment}-${random_string.suffix.result}.txt"
 
   # Level 3 — the content written into the file
   # templatefile() would be used here in production; heredoc used for clarity

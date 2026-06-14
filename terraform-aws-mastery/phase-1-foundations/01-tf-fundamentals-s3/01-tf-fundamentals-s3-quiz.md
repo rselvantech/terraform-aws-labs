@@ -1,4 +1,4 @@
-# Demo 01 — Quiz
+# Quiz — Demo 01: Terraform Fundamentals: First Real AWS Project with S3
 
 > TA-004 exam style. One correct answer unless stated otherwise.
 > Target: 80% or above before moving to Demo 02.

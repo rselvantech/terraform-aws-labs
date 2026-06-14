@@ -4,11 +4,11 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 6.47.0" # v6 — standalone S3 resource pattern
+      version = "~> 6.47.0"   # v6 — standalone S3 resource pattern
     }
     random = {
       source  = "hashicorp/random"
-      version = "~> 3.9.0" # for unique bucket name suffix
+      version = "~> 3.9.0"    # for unique bucket name suffix
     }
   }
 }

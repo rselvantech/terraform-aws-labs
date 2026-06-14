@@ -112,6 +112,29 @@ By the end of this demo you will be able to:
 
 ---
 
+## Directory Structure
+
+```
+00-tf-hcl-basics/               
+├── README.md                   # this file
+├── 00-tf-hcl-basics-anki.csv   # anki Flash cards
+├── 00-tf-hcl-basics-quiz.md    # quiz
+└── src/
+    ├── versions.tf             # terraform block + required_providers
+    ├── variables.tf            # input variable declarations
+    ├── locals.tf               # computed values using variable inputs
+    ├── main.tf                 # two resources: random_string + local_file
+    ├── outputs.tf              # exposes filename and suffix after apply
+    ├── output/                 # Terraform writes the generated file here
+    │   └── .gitkeep            # keeps directory in Git (empty dir workaround)
+    └── break-fix/             
+        └── broken.tf           # keep break-fix scenario code in one file
+```
+
+---
+
+## Concepts
+
 ## Part 1 — What is Infrastructure as Code?
 
 ### The Four Failure Modes of Manual Infrastructure
@@ -1299,32 +1322,13 @@ does NOT make any API calls to AWS. This means:
 
 ---
 
-## Directory Structure
-
-```
-00-tf-hcl-basics/               
-├── README.md                   # this file
-├── 00-tf-hcl-basics-anki.csv   # anki Flash cards
-├── 00-tf-hcl-basics-quiz.md    # quiz
-└── src/
-    ├── versions.tf             # terraform block + required_providers
-    ├── variables.tf            # input variable declarations
-    ├── locals.tf               # computed values using variable inputs
-    ├── main.tf                 # two resources: random_string + local_file
-    ├── outputs.tf              # exposes filename and suffix after apply
-    ├── output/                 # Terraform writes the generated file here
-    │   └── .gitkeep            # keeps directory in Git (empty dir workaround)
-    └── break-fix/             
-        └── broken.tf           # keep break-fix scenario code in one file
-```
-
----
-
 ## Lab — Full Terraform Workflow: Zero AWS, Zero Cost
 
 This lab uses two providers that make **no external API calls**. No AWS
 account. No credentials. No cost. The result: a generated text file on
 your disk — tangible proof the full Terraform workflow works end to end.
+
+---
 
 ### Providers Used
 
@@ -1864,7 +1868,9 @@ terraform apply -auto-approve
 
 ---
 
-### Step 9 — Cleanup
+## Cleanup
+
+> ⚠️ Run cleanup at the end of every session — resources in both regions.
 
 ```bash
 terraform destroy
@@ -1900,6 +1906,74 @@ cat terraform.tfstate
 #   "check_results": null
 # }
 ```
+
+---
+
+## What You Learned
+
+1. ✅ IaC solves four specific failures: drift, missing audit trail,
+   non-repeatable environments, bus factor
+2. ✅ Declarative IaC describes desired state; Terraform calculates steps.
+   Idempotent: run twice, second run changes nothing.
+3. ✅ Terraform vs CloudFormation vs CDK vs Ansible — each has a clear
+   best-fit scenario. Terraform wins on multi-cloud and ecosystem breadth.
+4. ✅ Three-component architecture: CLI core (graph + diff) → provider
+   plugin (API translation) → state file (source of truth)
+5. ✅ Eight HCL top-level block types: terraform, provider, resource,
+   variable, locals, output, data, module
+6. ✅ Six value types + set: string, number, bool, list, set, map, object.
+   `list(object({...}))` for structured collections (used from Demo 06+)
+7. ✅ `terraform console` = REPL for testing HCL expressions live
+8. ✅ Full workflow: init → validate → fmt → plan → apply → destroy.
+   `.terraform/` = don't commit. `.terraform.lock.hcl` = always commit.
+   `terraform.tfstate` = never commit locally, use remote backend in teams.
+
+---
+
+## Cert Tips — TA-004 Objectives Covered
+
+**Objective 1a — What is IaC:**
+> IaC = infrastructure defined in version-controlled code files, applied
+> programmatically. Key property: **idempotent**. Exam frequently tests:
+> "What happens when you run terraform apply with no config changes?" → plan
+> shows 0 changes, no API calls made.
+
+**Objective 1b — Advantages of IaC:**
+> The five advantages the exam tests: **consistency** (no drift),
+> **repeatability** (identical environments), **version control** (audit
+> trail), **automation** (no manual clicks), **self-documentation**
+> (code IS the docs). Know all five by name.
+
+**Objective 1c — Multi-cloud and service-agnostic:**
+> Terraform manages AWS, Azure, GCP, Kubernetes, Datadog, GitHub and 3,000+
+> others through one workflow. Exam trap: "CloudFormation supports
+> multi-cloud" → **False**.
+
+**Common MCQ traps:**
+
+| Question | Answer | Why |
+|---|---|---|
+| Should `.terraform.lock.hcl` be committed? | **Yes** | Locks exact provider versions + hashes |
+| Should `.terraform/` be committed? | **No** | Binary plugins, reproduced by init |
+| Should `terraform.tfstate` be committed? | **No** | Sensitive values, causes conflicts |
+| Does `terraform plan` make API calls? | **Yes** — Read() only | Reads current state, writes nothing |
+| Is `terraform apply` idempotent? | **Yes** | No changes if config matches state |
+| Does `map(string)` allow mixed value types? | **No** | All values must be strings |
+
+---
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| `terraform: command not found` | CLI not installed or not in PATH | Follow install steps; verify with `terraform version` |
+| `Error: Required plugins are not installed` | `init` not run | Run `terraform init` |
+| `Error: Invalid version constraint "~>1.15"` | Missing space | Must be `"~> 1.15.0"` with space |
+| `Error: Unsupported argument` | Wrong argument name for this provider version | Check registry.terraform.io for exact provider version docs |
+| `Error: Invalid expression` — `False` | HCL booleans are lowercase | Use `false` not `False` |
+| `Error: Reference to undeclared resource` | Wrong resource type in reference | Format: `<resource_type>.<name>.<attr>` |
+| `Error: A lock file conflict` | Lock file has different constraints | Run `terraform init -upgrade` |
+| `directory output/ does not exist` | Output dir not created | `mkdir -p src/output` before apply |
 
 ---
 
@@ -1992,71 +2066,25 @@ provider name. Fix: `random_string.id.result`
 
 ---
 
-## What You Learned
+## Interview Prep
 
-1. ✅ IaC solves four specific failures: drift, missing audit trail,
-   non-repeatable environments, bus factor
-2. ✅ Declarative IaC describes desired state; Terraform calculates steps.
-   Idempotent: run twice, second run changes nothing.
-3. ✅ Terraform vs CloudFormation vs CDK vs Ansible — each has a clear
-   best-fit scenario. Terraform wins on multi-cloud and ecosystem breadth.
-4. ✅ Three-component architecture: CLI core (graph + diff) → provider
-   plugin (API translation) → state file (source of truth)
-5. ✅ Eight HCL top-level block types: terraform, provider, resource,
-   variable, locals, output, data, module
-6. ✅ Six value types + set: string, number, bool, list, set, map, object.
-   `list(object({...}))` for structured collections (used from Demo 06+)
-7. ✅ `terraform console` = REPL for testing HCL expressions live
-8. ✅ Full workflow: init → validate → fmt → plan → apply → destroy.
-   `.terraform/` = don't commit. `.terraform.lock.hcl` = always commit.
-   `terraform.tfstate` = never commit locally, use remote backend in teams.
+**Q1. A junior engineer asks why your team doesn't just keep using the AWS Console since "it's faster for small changes." How do you respond?**
+The Console is fine for exploration and learning, but production infrastructure needs to be reproducible, auditable, and team-owned. Console changes leave no record of who changed what or why, cannot be peer-reviewed, and cannot be reapplied to recreate an environment. The four failure modes — drift, no audit trail, non-repeatability, and bus factor — all stem from infrastructure existing only in the Console and in people's heads. Terraform turns infrastructure into code: version-controlled, reviewable in a pull request, and identical across environments. Small changes still go through Terraform — the "speed" of a Console click is an illusion once you account for the cost of drift it introduces.
 
----
+**Q2. You run `terraform apply` and the plan shows `0 to add, 0 to change, 0 to destroy`. A teammate says "great, nothing happened, the run was useless." How do you correct them?**
+The run was not useless — it proved idempotency. Terraform read the current state, compared it against the desired configuration, called the providers' `Read()` functions to check actual infrastructure, and confirmed everything still matches. That confirmation has value: it proves no drift has occurred and the configuration is still an accurate description of reality. In a CI/CD pipeline, a `0 changes` plan on a scheduled run is a positive signal — it means production matches what's in Git. A "useless" run that does nothing is actually the system working correctly.
 
-## Cert Tips — TA-004 Objectives Covered
+**Q3. A new team member asks: "What's the actual difference between a `variable` and a `local`? They both seem to just hold values."** 
+A `variable` is an input — it accepts a value from outside the configuration: a `.tfvars` file, a `-var` flag, an environment variable, or a default. It's how the same configuration can run differently for different people, environments, or accounts. A `local` is a computed value derived entirely from within the configuration — it cannot accept external input. Locals are useful for avoiding repetition: if you build a name like `"${var.project}-${var.environment}-${random_id.suffix.hex}"` and use it in five places, compute it once as a local and reference `local.name` everywhere. The practical signal: if you ever need to override a value when running `terraform apply -var=...`, it must be a variable, not a local.
 
-**Objective 1a — What is IaC:**
-> IaC = infrastructure defined in version-controlled code files, applied
-> programmatically. Key property: **idempotent**. Exam frequently tests:
-> "What happens when you run terraform apply with no config changes?" → plan
-> shows 0 changes, no API calls made.
+**Q4. You're reviewing a colleague's Terraform code and see `upper = False` in a `random_string` resource. `terraform plan` is failing with a syntax error. What's wrong, and why does this matter beyond just this one line?**
+HCL booleans are strictly lowercase — `true` and `false`. `False` with a capital F is not a valid HCL literal, so `terraform validate` fails before any plan is even attempted. This matters beyond the single line because it's a common mistake for engineers coming from Python (where `True`/`False` are capitalized) or JSON in some contexts. The fix is mechanical — change `False` to `false` — but the broader lesson is that HCL is case-sensitive everywhere: block types, argument names, boolean literals, and resource references all must match exactly. `terraform validate` catches this for free, with zero AWS API calls, which is why it should always run before `plan`.
 
-**Objective 1b — Advantages of IaC:**
-> The five advantages the exam tests: **consistency** (no drift),
-> **repeatability** (identical environments), **version control** (audit
-> trail), **automation** (no manual clicks), **self-documentation**
-> (code IS the docs). Know all five by name.
+**Q5. Someone on your team deletes `.terraform.lock.hcl` because "it's just a generated file, we can always regenerate it." What's the risk, and how would you explain it to them?**
+Regenerating the lock file isn't risk-free — `terraform init` without a lock file resolves to the *latest* version matching the constraint in `required_providers`, not necessarily the version everyone was previously using. If a newer patch version of a provider was released with a behavioural change or bug, every engineer and CI runner who re-runs `init` after the lock file is deleted could silently get a different provider version, producing different `plan` output for the same `.tf` files. The lock file is what guarantees reproducibility — it records the *exact* resolved version plus SHA256 hashes for tamper detection. The fix here is simple: restore the file from Git history (`git checkout .terraform.lock.hcl`) rather than regenerating it, unless an upgrade is actually intended — in which case it should be a deliberate `terraform init -upgrade` with a `plan` review afterward.
 
-**Objective 1c — Multi-cloud and service-agnostic:**
-> Terraform manages AWS, Azure, GCP, Kubernetes, Datadog, GitHub and 3,000+
-> others through one workflow. Exam trap: "CloudFormation supports
-> multi-cloud" → **False**.
-
-**Common MCQ traps:**
-
-| Question | Answer | Why |
-|---|---|---|
-| Should `.terraform.lock.hcl` be committed? | **Yes** | Locks exact provider versions + hashes |
-| Should `.terraform/` be committed? | **No** | Binary plugins, reproduced by init |
-| Should `terraform.tfstate` be committed? | **No** | Sensitive values, causes conflicts |
-| Does `terraform plan` make API calls? | **Yes** — Read() only | Reads current state, writes nothing |
-| Is `terraform apply` idempotent? | **Yes** | No changes if config matches state |
-| Does `map(string)` allow mixed value types? | **No** | All values must be strings |
-
----
-
-## Troubleshooting
-
-| Error | Cause | Fix |
-|---|---|---|
-| `terraform: command not found` | CLI not installed or not in PATH | Follow install steps; verify with `terraform version` |
-| `Error: Required plugins are not installed` | `init` not run | Run `terraform init` |
-| `Error: Invalid version constraint "~>1.15"` | Missing space | Must be `"~> 1.15.0"` with space |
-| `Error: Unsupported argument` | Wrong argument name for this provider version | Check registry.terraform.io for exact provider version docs |
-| `Error: Invalid expression` — `False` | HCL booleans are lowercase | Use `false` not `False` |
-| `Error: Reference to undeclared resource` | Wrong resource type in reference | Format: `<resource_type>.<name>.<attr>` |
-| `Error: A lock file conflict` | Lock file has different constraints | Run `terraform init -upgrade` |
-| `directory output/ does not exist` | Output dir not created | `mkdir -p src/output` before apply |
+**Q6. A colleague asks why `local_file.report` in this demo's `main.tf` doesn't need a `depends_on` block pointing at `random_string.suffix`, even though its filename includes the random suffix.** 
+Terraform builds its dependency graph from attribute references found in the configuration, not from explicit `depends_on` declarations alone. Because `locals.tf` computes `filename = "...${random_string.suffix.result}.txt"`, and `local_file.report` uses `local.filename`, Terraform traces that reference back to `random_string.suffix.result` and automatically infers: "create `random_string.suffix` before `local_file.report`." This is called an **implicit dependency**. `depends_on` is only needed when a dependency exists that *cannot* be expressed as an attribute reference — for example, the S3 eventual-consistency case in Demo 01, where the dependency is about timing/propagation rather than a value being passed between resources.
 
 ---
 
@@ -2147,7 +2175,7 @@ and the Console verification workflow.
 **00-tf-hcl-basics-quiz.md:**
 
 ```
-# Demo 00 — Quiz
+# Quiz — Demo 00: IaC & HCL Foundations
 
 > TA-004 exam style. One correct answer unless stated otherwise.
 > Target: 80% or above before moving to Demo 01.

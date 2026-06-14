@@ -83,6 +83,37 @@ By the end of this demo you will be able to:
 
 ---
 
+## Cost & Free Tier
+
+| Resource | Cost | Notes |
+|---|---|---|
+| S3 bucket us-east-2 (empty) | **$0.00** | Free tier |
+| S3 bucket us-west-2 (empty) | **$0.00** | Free tier — different region, same free tier pool |
+| S3 API calls | **<$0.001** | Within free tier |
+| **Session total** | **~$0.00** | |
+
+---
+
+## Directory Structure
+
+```
+02-providers/
+├── README.md
+├── 02-providers-anki.csv         # Anki flash cards
+├── 02-providers-quiz.md          # Quiz
+└── src/
+    ├── versions.tf               # terraform block + required_providers
+    ├── provider.tf               # default AWS provider + aliased us-west-2 provider
+    ├── variables.tf              # region, profile, project, environment
+    ├── locals.tf                 # bucket names + common tags
+    ├── main.tf                   # two S3 buckets: primary (default) + archive (alias)
+    ├── outputs.tf                # both bucket names, ARNs, regions
+    └── break-fix/
+        └── broken.tf             # break-fix scenario
+```
+
+---
+
 ## Recall Check — Demo 01
 
 Answer from memory before reading anything new:
@@ -454,34 +485,7 @@ is shown as the v6 alternative.
 
 ---
 
-## Cost & Free Tier
-
-| Resource | Cost | Notes |
-|---|---|---|
-| S3 bucket us-east-2 (empty) | **$0.00** | Free tier |
-| S3 bucket us-west-2 (empty) | **$0.00** | Free tier — different region, same free tier pool |
-| S3 API calls | **<$0.001** | Within free tier |
-| **Session total** | **~$0.00** | |
-
----
-
-## Directory Structure
-
-```
-02-providers/
-├── README.md
-├── 02-providers-anki.csv         # Anki flash cards
-├── 02-providers-quiz.md          # Quiz
-└── src/
-    ├── versions.tf               # terraform block + required_providers
-    ├── provider.tf               # default AWS provider + aliased us-west-2 provider
-    ├── variables.tf              # region, profile, project, environment
-    ├── locals.tf                 # bucket names + common tags
-    ├── main.tf                   # two S3 buckets: primary (default) + archive (alias)
-    ├── outputs.tf                # both bucket names, ARNs, regions
-    └── break-fix/
-        └── broken.tf             # break-fix scenario
-```
+## Lab Step-by-Step Guide
 
 ---
 
@@ -1256,6 +1260,25 @@ validation. Fix: `status = "Enabled"`.
 
 ---
 
+## Interview Prep
+
+**Q1. A new engineer asks: "If I want resources in `us-west-2` and I'm already using AWS provider v6, do I actually need a provider alias, or can I just set `region` on the resource?"**
+It depends on what's shared between the two regions. AWS provider v6 added a per-resource `region` argument, which works well when only the region differs and credentials/authentication are identical — you just add `region = "us-west-2"` to the resource and skip the alias entirely. A provider alias is still necessary when the second region needs different credentials, a different IAM role (via `assume_role`), or when many resources need that region — declaring it once in a provider block avoids repeating `region = "us-west-2"` on every resource. For this demo's CloudNova scenario — same credentials, one archive bucket — either approach works, but aliases are shown because they're the more common pattern in larger configurations with cross-account access.
+
+**Q2. Your team has engineers on Linux, macOS, and Windows. A Windows engineer runs `terraform init` for the first time on a project whose lock file was generated on a teammate's Mac, and it fails with a checksum mismatch. What's the root cause and the fix — and how do you prevent this going forward?**
+The lock file's `zh:` hashes are platform-specific — they hash the individual files inside the provider's zip archive, which differ per OS/architecture. When the Mac engineer ran `init` first, the lock file only recorded `darwin_arm64` hashes. The Windows engineer's `init` computes hashes for `windows_amd64`, which aren't in the lock file, so Terraform refuses to proceed — this is the lock file working as designed, rejecting an unverified binary. The fix is `terraform providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=windows_amd64`, run once by anyone on the team, which adds hashes for all three platforms without removing existing ones or changing the resolved version. Going forward, this should be part of the standard workflow any time a provider version changes — run the multi-platform lock command before committing `.terraform.lock.hcl`.
+
+**Q3. You need to upgrade the `random` provider from `3.9.0` to a newly released `3.9.1` patch. Walk through the safe process, and explain what could go wrong if you skip steps.**
+The constraint `~> 3.9.0` already allows `3.9.1` — but `terraform init` alone won't pick it up, because once a lock file exists, plain `init` always installs the version *recorded in the lock file*, not the newest version the constraint permits. The safe sequence is: run `terraform init -upgrade`, which re-resolves the constraint and downloads `3.9.1`, updating the lock file; then run `terraform plan` to confirm zero unexpected infrastructure changes — a patch version shouldn't change behavior, but verifying this is the point of the exercise; then commit `versions.tf` (if the constraint changed) and `.terraform.lock.hcl` together as one atomic change, ideally tested in a non-production environment first. Skipping the `plan` step risks applying an upgrade that silently changes resource behavior without anyone reviewing the diff — and skipping the multi-platform lock re-run after an upgrade reintroduces the cross-platform checksum problem for teammates on other operating systems.
+
+**Q4. A resource using `provider = aws.west` is failing with `NoSuchBucket`, but the bucket clearly exists when you check the Console in `us-west-2`. What's the likely cause?**
+This is almost always a missing `provider = aws.west` on one of the *related* resources — typically a configuration resource like `aws_s3_bucket_versioning` or `aws_s3_bucket_public_access_block` that references the aliased bucket's ID but wasn't given the same provider meta-argument. Terraform doesn't infer the provider from the bucket ID reference alone; each resource independently determines which provider instance to use, defaulting to the unaliased provider if `provider` isn't set. So the versioning resource ends up calling `PutBucketVersioning` against `us-east-2`, where no bucket with that name exists — hence `NoSuchBucket`, even though the bucket is sitting right there in `us-west-2`. The fix is mechanical but easy to miss: every configuration resource tied to an aliased bucket needs the matching `provider = aws.<alias>` line, not just the bucket resource itself.
+
+**Q5. Someone proposes pinning the `aws` provider to `= 6.47.0` (exact version, no patch updates) across the whole team "for maximum stability." What are the tradeoffs, and what would you recommend instead?**
+An exact pin (`= 6.47.0`) guarantees everyone gets identical behavior — no surprise from a provider update — but it also means security patches and bug fixes in `6.47.1`, `6.47.2`, etc. require a manual constraint change and a new `terraform init -upgrade` even though those patches are, by definition, backward-compatible bug fixes within the same minor version. The more common and recommended approach is `~> 6.47.0`, which locks the minor version (blocking `6.48.0` and any breaking changes) while still allowing `terraform init -upgrade` to pick up patch-level fixes when the team chooses to run it. Combined with the lock file — which pins the *exact resolved version* until someone deliberately runs `-upgrade` — `~> 6.47.0` gives you both controlled reproducibility (lock file) and the flexibility to take patches when ready (constraint), without the friction of editing `versions.tf` for every patch release.
+
+---
+
 ## Key Takeaways
 
 1. **Commit `.terraform.lock.hcl` with multi-platform hashes.** A lock
@@ -1315,6 +1338,8 @@ fully understood.
 "What is ~> 6.0 vs ~> 6.47.0 as a version constraint? When would you use each?","~> 6.0 allows any 6.x.x version (6.0, 6.1, 6.47...), blocks 7.0.0. ~> 6.47.0 allows only 6.47.x, blocks 6.48.0. Use ~> 6.47.0 in root modules to pin to a known-good minor version. Use ~> 6.0 in reusable child modules to allow callers more flexibility.","demo02,versions,ta004-obj2b"
 "What command updates providers to the latest version allowed by current constraints?","terraform init -upgrade. Without -upgrade, terraform init uses the version already in the lock file (never downloads newer). With -upgrade, Terraform re-resolves the constraint and downloads the latest matching version, updating the lock file.","demo02,upgrade,cli,ta004-obj2b"
 "What does committing .terraform.lock.hcl guarantee for a team?","Every engineer and every CI runner that runs terraform init downloads the exact same provider binary — same version, verified by the same SHA256 hashes. Prevents the situation where different team members get different patch versions and produce different plan results for identical configs.","demo02,lockfile,teams,ta004-obj2d"
+"You run terraform providers and see two entries under provider[registry.terraform.io/hashicorp/aws] ~> 6.47.0 — one labelled 'aws — default, us-east-2' and one 'aws.west — aliased, us-west-2'. What does this confirm?","Both the default provider and the aliased provider (west) are correctly declared and resolve to the same version constraint (~> 6.47.0) as required — aliases must share one version. The two entries show two configurations of the same provider, not two different providers. This is a read-only command — it downloads and installs nothing.","demo02,providers,cli,ta004-obj2a"
+"After apply, terraform state show aws_s3_bucket.archive shows provider = \"provider[\\\"registry.terraform.io/hashicorp/aws\\\"].west\". What does the .west suffix confirm?","It confirms this specific resource is managed by the ALIASED provider instance (us-west-2), not the default (us-east-2) instance. This is the definitive way to verify provider routing for a resource after apply — the plan output region field is a useful early signal, but state show with the provider field is the authoritative confirmation.","demo02,providers,state,ta004-obj2c"
 ```
 
 ---
@@ -1324,7 +1349,7 @@ fully understood.
 **02-providers-quiz.md:**
 
 ```
-# Demo 02 — Quiz
+# Quiz — Demo 02: Providers: Configuration, Versioning, and the Lock File
 
 > TA-004 exam style. One correct answer unless stated otherwise.
 > Target: 80% or above before moving to Demo 03.

@@ -130,6 +130,43 @@ By the end of this demo you will be able to:
 
 ---
 
+## Cost & Free Tier
+
+| Resource | Free tier | Cost | Notes |
+|---|---|---|---|
+| S3 app bucket (empty) | 5GB / 2,000 PUT / 20,000 GET per month | **$0.00** | No objects stored in this demo |
+| S3 state bucket (~2KB file) | Covered by free tier | **$0.00** | |
+| AES-256 encryption (SSE-S3) | Always free | **$0.00** | AWS absorbs the cost of S3-managed keys. SSE-KMS (customer-managed) is paid — we use AES256. |
+| S3 API calls | Within free tier | **<$0.001** | |
+| `random_id` | Free — no AWS resource | **$0.00** | |
+| **Session total** | | **~$0.00** | |
+
+> Always run cleanup at the end of the session. Empty S3 buckets
+> cost nothing but good hygiene means destroying everything completely.
+
+---
+
+## Directory Structure
+
+```
+01-tf-fundamentals-s3/
+├── README.md
+├── 01-tf-fundamentals-s3-anki.csv   # Anki flash cards
+├── 01-tf-fundamentals-s3-quiz.md    # Quiz
+└── src/
+    ├── versions.tf                   # terraform block + provider version constraints
+    ├── provider.tf                   # AWS provider: region, profile, default_tags
+    ├── variables.tf                  # input variables
+    ├── locals.tf                     # computed bucket name + common tags
+    ├── main.tf                       # S3 bucket + 3 config resources + random_id
+    ├── outputs.tf                    # bucket name, ARN, region, suffix
+    ├── backend.tf                    # S3 remote backend (added in Part B)
+    └── break-fix/
+        └── broken.tf                 # break-fix scenario
+```
+
+---
+
 ## Recall Check — Demo 00
 
 Answer from memory before reading anything new:
@@ -643,40 +680,7 @@ The `backend "s3"` block lives inside a `terraform {}` block — in
 
 ---
 
-## Cost & Free Tier
-
-| Resource | Free tier | Cost | Notes |
-|---|---|---|---|
-| S3 app bucket (empty) | 5GB / 2,000 PUT / 20,000 GET per month | **$0.00** | No objects stored in this demo |
-| S3 state bucket (~2KB file) | Covered by free tier | **$0.00** | |
-| AES-256 encryption (SSE-S3) | Always free | **$0.00** | AWS absorbs the cost of S3-managed keys. SSE-KMS (customer-managed) is paid — we use AES256. |
-| S3 API calls | Within free tier | **<$0.001** | |
-| `random_id` | Free — no AWS resource | **$0.00** | |
-| **Session total** | | **~$0.00** | |
-
-> Always run cleanup at the end of the session. Empty S3 buckets
-> cost nothing but good hygiene means destroying everything completely.
-
----
-
-## Directory Structure
-
-```
-01-tf-fundamentals-s3/
-├── README.md
-├── 01-tf-fundamentals-s3-anki.csv   # Anki flash cards
-├── 01-tf-fundamentals-s3-quiz.md    # Quiz
-└── src/
-    ├── versions.tf                   # terraform block + provider version constraints
-    ├── provider.tf                   # AWS provider: region, profile, default_tags
-    ├── variables.tf                  # input variables
-    ├── locals.tf                     # computed bucket name + common tags
-    ├── main.tf                       # S3 bucket + 3 config resources + random_id
-    ├── outputs.tf                    # bucket name, ARN, region, suffix
-    ├── backend.tf                    # S3 remote backend (added in Part B)
-    └── break-fix/
-        └── broken.tf                 # break-fix scenario
-```
+## Lab Step-by-Step Guide
 
 ---
 
@@ -1618,6 +1622,25 @@ Fix: `restrict_public_buckets = true`
 
 ---
 
+## Interview Prep
+
+**Q1. A junior engineer copies an S3 bucket example from a tutorial they found online. `terraform validate` fails with `An argument named "versioning" is not expected here`. How do you explain what's wrong?**
+The tutorial was written for AWS provider v5, where S3 settings like `versioning`, `server_side_encryption_configuration`, and `lifecycle_rule` were nested inline inside the `aws_s3_bucket` resource. AWS provider v6 (released June 2025) removed all of these inline blocks — each setting is now its own standalone resource: `aws_s3_bucket_versioning`, `aws_s3_bucket_server_side_encryption_configuration`, `aws_s3_bucket_public_access_block`, and so on, each referencing the bucket via `bucket = aws_s3_bucket.app.id`. The practical takeaway for the team: before copying any Terraform example found online, check which provider version it targets — a lot of older content, Stack Overflow answers, and even some courses still show v5 syntax, which will fail validation against v6.
+
+**Q2. During `terraform apply`, `aws_s3_bucket_public_access_block` fails intermittently with `NoSuchPublicAccessBlockConfiguration`, but re-running `apply` immediately succeeds. What's happening, and what's the permanent fix?**
+This is an S3 eventual-consistency race condition, not a flaky network issue. When `aws_s3_bucket.app` finishes creating, AWS's API returns `200 OK`, but the bucket may not have fully propagated across all of S3's internal systems yet. If `aws_s3_bucket_public_access_block` starts immediately afterward — which Terraform will do based on the implicit attribute reference alone — AWS may reject the configuration call because its internal systems aren't ready. The permanent fix is `depends_on = [aws_s3_bucket.app]` on every S3 configuration resource (versioning, encryption, public access block). `depends_on` tells Terraform to wait until the bucket resource has *fully completed*, not just returned success, giving AWS the propagation time it needs. Re-running `apply` "fixes" it by chance — the second attempt happens after enough time has passed — but that's not a reliable production pattern.
+
+**Q3. Your team is about to onboard a second engineer who will also run `terraform apply` against the same infrastructure. What changes are required before that happens, and why can't you wait?**
+Before a second engineer applies against the same configuration, state must move from local to a remote backend with locking — in this demo, S3 with `use_lockfile = true`. With local state, each engineer's `terraform.tfstate` is an independent snapshot on their own machine. If both engineers run `apply` based on different (possibly stale) copies of state, their changes can conflict — one apply's results overwrite the other's in state, even though both sets of resources exist in AWS. The fix isn't optional once a second person is involved; it's foundational. State locking via `use_lockfile = true` additionally prevents two simultaneous applies from corrupting the shared state file — if Engineer A's apply is running, Engineer B's apply will fail immediately with "Error acquiring the state lock" rather than racing.
+
+**Q4. Someone manually adds a tag to an S3 bucket through the Console "just to test something," then forgets about it. Three weeks later, `terraform plan` shows an unexpected change. Walk through what happened and how to resolve it.**
+This is drift — a Terraform-managed resource was modified outside Terraform. Running `terraform plan -refresh-only` would show the discrepancy in isolation: Terraform calls the provider's `Read()` function, sees the extra tag in actual AWS state, compares it against the last-known `.tfstate`, and reports the difference without making any changes. From here there are two choices: `terraform apply -refresh-only` accepts the drift into state (keeping the manual tag), or a normal `terraform apply` reconciles AWS back to match the `.tf` files — removing the manually added tag because it's not declared in code. The correct production behavior is almost always the second option: Terraform is the source of truth, and untracked manual changes should be removed, not silently absorbed. The broader lesson for the team: any change that needs to persist must go into the `.tf` files and through review — Console edits, even "temporary" ones, create exactly this kind of surprise.
+
+**Q5. A teammate asks: "Why do we need a separate S3 bucket just to hold the state file? Why not just create everything — including the state bucket — with one `terraform apply`?"**
+This is the chicken-and-egg problem with remote state. Before `terraform init` can configure the S3 backend, the bucket that will hold the state file must already exist — Terraform needs somewhere to write its state *before* it can manage anything, including the bucket meant to store that state. If you tried to define the state bucket as a resource in the same configuration that uses it as a backend, you'd have a circular dependency: Terraform can't create the bucket because it needs the bucket to track that it created it. The practical solution is to create the state bucket manually (via Console or a one-off `aws s3api create-bucket` command) as a one-time bootstrap step, completely outside the Terraform configuration that will use it.
+
+---
+
 ## Key Takeaways
 
 1. **AWS provider version changes are breaking changes.** v5 → v6
@@ -1688,7 +1711,7 @@ patterns for CI/CD.
 **01-tf-fundamentals-s3-quiz.md:**
 
 ```
-# Demo 01 — Quiz
+# Quiz — Demo 01: Terraform Fundamentals: First Real AWS Project with S3
 
 > TA-004 exam style. One correct answer unless stated otherwise.
 > Target: 80% or above before moving to Demo 02.

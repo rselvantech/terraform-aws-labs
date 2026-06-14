@@ -1,4 +1,4 @@
-# Demo 00 — Quiz
+# Quiz — Demo 00: IaC & HCL Foundations
 
 > TA-004 exam style. One correct answer unless stated otherwise.
 > Target: 80% or above before moving to Demo 01.

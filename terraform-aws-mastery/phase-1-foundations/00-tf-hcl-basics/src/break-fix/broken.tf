@@ -19,17 +19,17 @@ variable "env" {
   type = string
 
   validation {
-    condition     = contains(["dev", "prod"], var.env)     # Error 1
+    condition     = contains(["dev", "prod"], env)     # Error 1
     error_message = "Must be dev or prod."
   }
 }
 
 resource "random_string" "id" {
   length  = 8
-  upper   = false                                       # Error 2
+  upper   = False                                       # Error 2
   special = false
 }
 
 output "team_id" {
-  value = "${var.team}-${random_string.id.result}"             # Error 3
+  value = "${var.team}-${random.id.result}"             # Error 3
 }
