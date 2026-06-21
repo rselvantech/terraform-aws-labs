@@ -2026,6 +2026,34 @@ First: does this configuration actually have more than 10 independent resources 
 
 ---
 
+## Quick Commands Reference
+
+| Command | Description |
+|---|---|
+| `terraform init` | Downloads provider plugins and initialises the backend |
+| `terraform fmt` | Auto-formats `.tf` files in the current directory only |
+| `terraform fmt -check` | Checks formatting without writing, exiting `3` if reformatting is needed |
+| `terraform fmt -check -diff -recursive` | Checks and previews formatting changes across the project, including subdirectories |
+| `terraform fmt -recursive` | Auto-formats `.tf` files in the current directory and all subdirectories |
+| `terraform validate` | Checks internal configuration consistency with zero API calls |
+| `terraform validate -json` | Outputs validation results as machine-readable JSON |
+| `terraform plan` | Previews changes, merging drift and configuration changes into one diff |
+| `terraform plan -out=<FILE>` | Saves the computed plan to a binary file for later apply |
+| `terraform apply <FILE>` | Applies exactly the saved plan, failing if state has since changed |
+| `terraform plan -target=<ADDRESS>` | Scopes the plan to one resource and its dependencies |
+| `terraform apply -target=<ADDRESS>` | Applies only the targeted resource and its dependencies |
+| `terraform plan -refresh-only` | Shows drift only, isolated from pending configuration changes |
+| `terraform plan -refresh=false` | Skips the refresh step, planning purely from the existing state file |
+| `terraform apply -parallelism=<N>` | Sets the maximum number of concurrent resource operations during apply |
+| `terraform graph` | Outputs the resource dependency graph in DOT format |
+| `terraform graph > <FILE>` | Saves the dependency graph to a file for pasting into a DOT viewer |
+| `TF_LOG=<LEVEL> terraform <COMMAND>` | Enables Terraform's internal debug logging for one command |
+| `TF_LOG=<LEVEL> TF_LOG_PATH=<FILE> terraform <COMMAND>` | Enables debug logging and redirects it to a file |
+| `terraform output <NAME>` | Prints a single output value |
+| `terraform destroy` | Destroys all resources managed by this configuration |
+
+---
+
 ## Next Demo
 
 **Demo 04 — State Management and Backends**

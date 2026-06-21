@@ -1666,6 +1666,26 @@ This is the chicken-and-egg problem with remote state. Before `terraform init` c
 
 ---
 
+## Quick Commands Reference
+
+| Command | Description |
+|---|---|
+| `aws sts get-caller-identity --profile <PROFILE>` | Confirms which AWS account and identity the named profile authenticates as |
+| `aws s3api list-buckets --profile <PROFILE>` | Lists S3 buckets to verify the profile has S3 permissions |
+| `terraform init` | Downloads providers and initialises the backend (local, before Part B) |
+| `terraform validate` | Checks configuration syntax and schema with zero API calls |
+| `terraform fmt` | Auto-formats `.tf` files to canonical style |
+| `terraform plan` | Previews changes against AWS, including a read-only refresh |
+| `terraform apply` | Applies pending changes after confirmation |
+| `terraform init -migrate-state` | Copies existing local state into a newly configured remote backend |
+| `terraform plan -refresh-only` | Shows drift only, without proposing or making any changes |
+| `terraform apply -refresh-only` | Accepts detected drift into state without changing AWS |
+| `terraform state list` | Lists every resource address tracked in state |
+| `terraform state show <ADDRESS>` | Shows full state details for one resource, no AWS API calls |
+| `terraform destroy` | Destroys all resources managed by this configuration |
+
+---
+
 ## Next Demo
 
 **Demo 02 — `02-providers`:** Deep dive into providers — multiple providers,

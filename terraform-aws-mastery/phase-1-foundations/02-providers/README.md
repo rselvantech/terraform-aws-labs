@@ -1307,6 +1307,26 @@ An exact pin (`= 6.47.0`) guarantees everyone gets identical behavior — no sur
 
 ---
 
+## Quick Commands Reference
+
+| Command | Description |
+|---|---|
+| `aws sts get-caller-identity --profile <PROFILE>` | Confirms the active AWS account and identity for the named profile |
+| `terraform init` | Downloads provider plugins and initialises the backend |
+| `terraform providers` | Lists every provider instance the configuration uses, including aliases |
+| `terraform validate` | Checks configuration syntax and schema with zero API calls |
+| `terraform fmt` | Auto-formats `.tf` files to canonical style |
+| `terraform plan` | Previews changes, showing which provider instance routes each resource |
+| `terraform apply` | Applies pending changes after confirmation |
+| `cat .terraform.lock.hcl` | Displays the lock file's recorded version and hash entries |
+| `terraform providers lock -platform=<OS_ARCH>` | Adds provider hashes for an additional platform to the lock file |
+| `terraform init -upgrade` | Re-resolves version constraints and downloads the latest matching provider version |
+| `terraform state list` | Lists every resource address tracked in state |
+| `terraform state show <ADDRESS>` | Shows full state details for one resource, including its provider instance |
+| `terraform destroy` | Destroys all resources in both regions |
+
+---
+
 ## Next Demo
 
 **Demo 03 — `03-core-workflow`:** Deep dive into the Terraform workflow

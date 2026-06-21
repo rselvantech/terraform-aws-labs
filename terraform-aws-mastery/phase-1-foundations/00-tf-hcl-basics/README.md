@@ -2114,6 +2114,33 @@ Terraform builds its dependency graph from attribute references found in the con
 
 ---
 
+## Quick Commands Reference
+
+| Command | Description |
+|---|---|
+| `terraform version` | Shows the installed Terraform CLI version |
+| `terraform init` | Downloads provider plugins and initialises the backend |
+| `terraform validate` | Checks HCL syntax and schema with zero API calls |
+| `terraform fmt` | Auto-formats `.tf` files to canonical style |
+| `terraform fmt -check -diff` | Shows what `fmt` would change without writing it |
+| `terraform plan` | Previews changes by comparing desired state to current state |
+| `terraform plan -out=<FILE>` | Saves the computed plan to a binary file for later apply |
+| `terraform apply` | Applies pending changes, prompting for confirmation |
+| `terraform apply <FILE>` | Applies exactly the saved plan from `-out` |
+| `terraform apply -auto-approve` | Applies without an interactive confirmation prompt (CI/CD only) |
+| `terraform apply -replace=<ADDRESS>` | Forces a specific resource to be destroyed and recreated |
+| `terraform destroy` | Destroys all resources managed by this configuration |
+| `terraform output` | Prints all output values from the current state |
+| `terraform output <NAME>` | Prints a single output value |
+| `terraform output -raw <NAME>` | Prints an output value with no surrounding quotes |
+| `terraform output -json` | Prints all outputs as JSON |
+| `terraform show` | Prints a human-readable summary of the current state |
+| `terraform state list` | Lists every resource address currently tracked in state |
+| `terraform state show <ADDRESS>` | Shows full state details for one resource |
+| `terraform console` | Opens an interactive REPL for testing HCL expressions |
+
+---
+
 ## Next Demo
 
 **Demo 01 — `01-tf-fundamentals-s3`:** Apply everything you just learned
