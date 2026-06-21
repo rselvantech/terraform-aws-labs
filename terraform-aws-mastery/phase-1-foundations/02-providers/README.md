@@ -1348,7 +1348,7 @@ fully understood.
 
 **02-providers-quiz.md:**
 
-```
+````
 # Quiz — Demo 02: Providers: Configuration, Versioning, and the Lock File
 
 > TA-004 exam style. One correct answer unless stated otherwise.
@@ -1517,4 +1517,4 @@ Score guide:
 | 6-7/8 | Review wrong answers in Anki, then proceed |
 | 4-5/8 | Re-read relevant README sections, retry |
 | Below 4/8 | Re-read Demo 02 before proceeding |
-```
+````
