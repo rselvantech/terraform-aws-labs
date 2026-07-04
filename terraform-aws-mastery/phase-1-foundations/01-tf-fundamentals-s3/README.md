@@ -1733,8 +1733,9 @@ patterns for CI/CD.
 ```
 # Quiz — Demo 01: Terraform Fundamentals: First Real AWS Project with S3
 
-> TA-004 exam style. One correct answer unless stated otherwise.
+> One correct answer per question unless stated otherwise.
 > Target: 80% or above before moving to Demo 02.
+> TA-004 exam style.
 
 ---
 
@@ -1888,11 +1889,10 @@ no charge. SSE-KMS (customer-managed) is paid. This is why we use AES256.
 ---
 
 Score guide:
-
 | Score | Action |
 |---|---|
-| 8/8 | Proceed to Demo 02 |
-| 6-7/8 | Review wrong answers in Anki, then proceed |
-| 4-5/8 | Re-read relevant README sections, retry |
-| Below 4/8 | Re-read Demo 01 before proceeding |
+| 8/8 | Import Anki cards, move to Demo 02 |
+| 7/8 | Review the wrong answer, then proceed |
+| 6/8 | Re-read the relevant section, retry those questions |
+| Below 6/8 | Re-read the full demo and redo the walkthrough before proceeding |
 ```
