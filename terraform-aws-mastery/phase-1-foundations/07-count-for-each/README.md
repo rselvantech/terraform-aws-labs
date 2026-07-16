@@ -1,113 +1,171 @@
-# Demo 07: Count, For-Each, and the Multiplicity Decision
+# Demo 07 — Outputs, Sensitivity, and Remote State
+
+---
 
 ## Overview
 
-CloudNova has been writing one `resource` block per S3 bucket, per SQS queue, per IAM user — and it's starting to hurt. The platform team just asked for three near-identical dead-letter queues and three near-identical S3 buckets (dev/staging/prod), and copy-pasting six resource blocks with only the name changed is exactly the kind of repetition Terraform is supposed to eliminate.
+Demo 05 and Demo 06 both used outputs already — a couple of quick
+`role_name`/`role_arn`/`sns_topic_arn` values, just enough to confirm
+`apply` worked. Neither demo explained what an output actually *is* as
+an interface: who else can read it, what happens when it's marked
+`sensitive`, why `ephemeral` outputs come with a restriction variables
+don't have, or how a completely separate Terraform configuration reads
+these values back without ever touching this one's `.tf` files.
 
-This demo covers the two mechanisms Terraform provides for creating multiple instances of a resource from a single block — `count` and `for_each` — plus the expression type you need to read data back out of them (splat expressions), and the decision framework for choosing between them.
+**Real-world scenario — CloudNova:** a second team owns the
+notification-consumer service and needs the SNS topic's ARN — but they
+work in a separate Terraform configuration with its own state, and
+they shouldn't need write access to this one. This demo builds two
+different ways to hand that value across: `terraform_remote_state`,
+and AWS Systems Manager Parameter Store.
 
-- `count` — index-based multiplicity (`count.index`, `resource[0]`)
-- `for_each` — key-based multiplicity over a map or set (`each.key`, `each.value`, `resource["key"]`)
-- Converting a list to a set with `toset()` so `for_each` can consume it
-- Splat expressions (`[*]`) for collecting one attribute across every instance
-- Why `count` and `for_each` cannot be used on the same resource block
-- When to reach for `count`, when to reach for `for_each`, and when to just write a single resource
+**What this demo builds:**
 
-**What this demo does NOT cover:** how state addressing changes when you reorder a `count` list or migrate a resource from `count` to `for_each`, and the specific "removing item 2 of 5" replacement trap. That's a state-mechanics topic in its own right — full coverage is in Demo 08 (State Addressing and Multiplicity Migration).
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PART A — Rebuilding the Baseline & Marking Outputs                     │
+│  Recreate the IAM role + SNS topic from Demo 06   |   full output       │
+│  argument depth: sensitive, ephemeral restriction, depends_on           │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PART B — Output Variants & Remote State                                │
+│  terraform output in all its forms   |   a second Terraform config     │
+│  reads role_arn back via terraform_remote_state, with zero write access│
+├─────────────────────────────────────────────────────────────────────────┤
+│  PART C — SSM Parameter Store as a Second Sharing Pattern               │
+│  Write the SNS topic ARN to Parameter Store as SecureString   |         │
+│  compare remote state vs. SSM vs. env vars vs. hardcoding                │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**What this demo covers:**
+- `output` block full argument depth: `description`, `sensitive`,
+  `ephemeral` (and its child-module-only restriction), `depends_on`
+- All `terraform output` variants: default, named, `-json`, `-raw`
+- `data.terraform_remote_state` — reading another configuration's
+  outputs from its state, without any write access to that state
+- `aws_ssm_parameter` — `String` vs. `SecureString`, as a second,
+  decoupled sharing pattern
+- The sharing-pattern decision: remote state vs. SSM vs. environment
+  variables vs. hardcoding
+
+**What this demo does NOT cover:** this is the last demo in the
+"variables → locals → outputs" trilogy — Demo 08 onward moves to data
+sources, expressions, and resource multiplicity, all building on the
+IAM role and SNS topic this trilogy has been maintaining.
 
 ---
 
 ## Prerequisites
 
-**Knowledge:** This demo assumes Demo 06 (Data Sources and Expressions) — specifically `for` expressions, `toset()`/`keys()`/`values()`, and `dynamic` blocks. If `dynamic` blocks and `for_each` on a *resource* sound like the same thing, that's addressed directly in Concepts below — they are not.
+### Knowledge
+- Demo 06 completed — the distinction test, `try()`/`coalesce()`/
+  `merge()`, and the SNS topic this demo continues building on
 
-**Required Tools:**
+### Required Tools
 
-| Tool | Min version | Install | Verify |
-|---|---|---|---|
-| Terraform | `>= 1.9.0` | Same as Demo 00 — [developer.hashicorp.com/terraform/install](https://developer.hashicorp.com/terraform/install) | `terraform version` |
-| AWS CLI | `>= 2.15` | Same as Demo 01 | `aws --version` |
-| AWS credentials configured | — | Same profile used since Demo 01 | `aws sts get-caller-identity` |
+Same as Demo 05/06 — Terraform `>= 1.15.0`, AWS CLI `>= 2.x`, `jq`.
 
-**IAM permissions required for this demo:**
+### Verify AWS Account and Permissions
+
+```bash
+aws sts get-caller-identity --profile default
+aws configure get region --profile default
 ```
-sqs:CreateQueue
-sqs:DeleteQueue
-sqs:GetQueueAttributes
-sqs:ListQueues
-s3:CreateBucket
-s3:DeleteBucket
-s3:PutBucketTagging
-s3:ListBucket
-iam:CreateUser
-iam:DeleteUser
-iam:GetUser
+
+**Required permissions for this demo** (adds SSM to Demo 06's list):
+
 ```
-Console verify: IAM → Users → confirm your user/role has these actions (or `AdministratorAccess` in a sandbox account, consistent with Demos 00–06).
-CLI verify: `aws sts get-caller-identity` (confirms which identity you're using before running `apply`).
+iam:CreateRole, iam:DeleteRole, iam:GetRole, iam:ListRoles
+iam:PutRolePolicy, iam:DeleteRolePolicy, iam:GetRolePolicy
+iam:TagRole, iam:UntagRole, iam:ListRoleTags
+iam:PassRole
+sts:GetCallerIdentity
+sns:CreateTopic, sns:DeleteTopic, sns:GetTopicAttributes
+sns:SetTopicAttributes, sns:Publish, sns:TagResource
+ssm:PutParameter, ssm:GetParameter, ssm:DeleteParameter
+ssm:AddTagsToResource, ssm:ListTagsForResource
+```
+
+> For a learning account, `IAMFullAccess`, `AmazonSNSFullAccess`, and
+> `AmazonSSMFullAccess` managed policies cover the permissions above.
 
 ---
 
 ## Demo Objectives
 
-1. ✅ Create three or more identical resource instances using `count` and reference each one via `count.index`
-2. ✅ Create resource instances keyed by name using `for_each` over a map, and reference `each.key`/`each.value`
-3. ✅ Convert a list variable to a set with `toset()` to satisfy `for_each`'s type requirement
-4. ✅ Collect one attribute across every instance of a `count` or `for_each` resource using a splat expression (`[*]`)
-5. ✅ Correctly address individual resource instances in CLI output and code (`resource[0]` vs `resource["key"]`)
-6. ✅ Apply CloudNova's decision framework to choose `count`, `for_each`, or a single resource for a given scenario
-7. ✅ Diagnose and fix the three most common `count`/`for_each` authoring errors from Terraform's own error output
-8. ✅ Explain why Terraform rejects `count` and `for_each` on the same resource block, and what to do instead
+By the end of this demo you will be able to:
+
+1. ✅ Mark outputs `sensitive`, and explain why `ephemeral` outputs are
+   restricted to child modules
+2. ✅ Use `depends_on` on an output block
+3. ✅ Use every `terraform output` variant: default, named, `-json`, `-raw`
+4. ✅ Read another configuration's outputs via `terraform_remote_state`,
+   with zero write access to that configuration's state
+5. ✅ Use SSM Parameter Store as a second, decoupled sharing pattern,
+   and choose between it and remote state for a given scenario
 
 ---
 
 ## Cost & Free Tier
 
-| Resource | Free tier status | Notes |
-|---|---|---|
-| SQS queues (3x, standard) | Free forever — 1M requests/month | Well under free tier for a lab |
-| S3 buckets (3x, empty) | Free forever for the buckets themselves; storage billed per GB after 5GB/12mo | No objects uploaded in this demo — negligible |
-| IAM users (2x) | Always free | IAM has no usage-based cost |
+| Resource | Free tier | Cost | Notes |
+|---|---|---|---|
+| `aws_iam_role` / `aws_iam_role_policy` | Always free | **$0.00** | Continued from Demo 05 |
+| `aws_sns_topic` | Always free — 1M publishes/month | **$0.00** | Continued from Demo 06 |
+| `aws_ssm_parameter` (Standard tier) | Always free | **$0.00** | New this demo |
+| **Session total** | | **$0.00** | |
 
-**Total expected cost for this demo: $0.00**, provided Cleanup is run at the end of the session (bucket/queue/user existence itself is free, but don't leave the account cluttered).
+> Always run cleanup at the end of the session.
 
 ---
 
 ## Directory Structure
 
 ```
-07-count-for-each/
-├── README.md                          # this file
-├── 07-count-for-each-anki.csv         # Anki flashcard deck
-├── 07-count-for-each-quiz.md          # standalone quiz
+07-outputs-remote-state/
+├── README.md
+├── 07-outputs-remote-state-anki.csv
+├── 07-outputs-remote-state-quiz.md
 └── src/
-    ├── 01-providers.tf                 # terraform {} + provider block, versions pinned
-    ├── 02-variables.tf                 # environment map, queue count, user list
-    ├── 03-count-queues.tf              # count example: SQS dead-letter queues
-    ├── 04-foreach-buckets.tf           # for_each example: per-environment S3 buckets + toset() IAM users
-    ├── 05-outputs.tf                   # splat expression outputs
+    ├── 01-versions.tf       # terraform block + provider version constraints
+    ├── 02-provider.tf       # AWS provider: region, profile, default_tags
+    ├── 03-variables.tf      # Demo 06's finished variable set, recreated
+    ├── 04-locals.tf         # Demo 06's finished locals, recreated (IAM + SNS)
+    ├── 05-main.tf           # aws_iam_role + aws_iam_role_policy
+    ├── 06-sns.tf            # aws_sns_topic (continued from Demo 06)
+    ├── 07-outputs.tf        # NEW — full output argument depth this demo teaches
+    ├── 08-ssm.tf            # NEW — aws_ssm_parameter, SecureString
+    ├── consumer/
+    │   └── main.tf           # NEW — separate config, reads role_arn via terraform_remote_state
     └── break-fix/
-        └── broken.tf                   # 3 deliberate count/for_each errors, self-contained
+        └── broken.tf
 ```
 
 ---
 
 ## Recall Check — Demo 06
 
-Answer from memory before reading further. These questions come from Demo 06 (Data Sources and Expressions) only.
+Answer from memory before reading further:
 
-1. You need to reference an AWS account ID inside a resource block without hardcoding it. Which data source do you use, and what does it return?
-2. You have a list of subnet IDs and need a map instead, keyed by availability zone. Which Terraform expression type builds that transformation, and what's the general shape of its syntax?
-3. You want to attach a variable number of ingress rules to a security group depending on an input variable, without repeating the `ingress {}` block by hand. What Terraform construct handles this, and what does its `iterator` argument do?
+1. What is the distinction test for choosing a `local` over a `variable`?
+2. `merge(local.caller_tags, local.base_tags)` was written when the
+   intent was "caller overrides base." What actually happens, and why?
+3. Two locals reference each other: `a = "prefix-${local.b}"` and
+   `b = "suffix-${local.a}"`. What happens, and when is it detected?
 
-<details>
-<summary>Answers</summary>
+**Answers**
 
-1. `data "aws_caller_identity" "current"` — it returns the calling identity's `account_id`, `arn`, and `user_id`, resolved via the `sts:GetCallerIdentity` API call, without requiring you to hardcode the account number.
-2. A `for` expression, specifically the map-producing form: `{ for s in var.subnets : s.az => s.id }` — the part before `=>` becomes the key, the part after becomes the value.
-3. A `dynamic` block — it repeats a nested block *within* a single resource based on a collection. The `iterator` argument lets you rename the loop variable (default is the block's own label, e.g. `ingress`) to avoid collisions when nesting dynamic blocks.
-
-</details>
+1. If the value would ever need to be overridden from outside the
+   configuration (different per environment, engineer, or run), it's a
+   variable. If it's always derived from other values in the
+   configuration and never needs external input, it's a local.
+2. `base_tags`'s values win instead of `caller_tags`'s — `merge()` uses
+   right-most-wins for key conflicts, and `base_tags` was listed last.
+   There's no error; it silently applies the opposite of the intended
+   precedence. Fix: reverse the argument order.
+3. `terraform plan` errors with "Cycle in local values" — detected at
+   plan time, before any value is evaluated, not silently resolved or
+   left to an arbitrary evaluation order.
 
 ---
 
@@ -115,145 +173,237 @@ Answer from memory before reading further. These questions come from Demo 06 (Da
 
 ### What's New in This Demo
 
-| Construct | Purpose |
-|---|---|
-| `count` | Create N identical instances of a resource, indexed 0 to N-1 |
-| `count.index` | The current instance's index inside a `count`-driven resource |
-| `for_each` | Create one instance of a resource per key in a map, or per value in a set |
-| `each.key` / `each.value` | The current instance's key/value inside a `for_each`-driven resource |
-| `toset()` | Converts a list to a set — required when you have a list but need `for_each`'s set/map input |
-| Splat expression `[*]` | Collects one attribute across every instance of a `count` or `for_each` resource into a single list |
-| `resource[0]` / `resource["key"]` | State/code addressing syntax for one instance of a multi-instance resource |
-
-### Related constructs worth knowing (not used in this demo)
-
-| Construct | Why it's related | Where it's covered |
+| Construct | Type | Purpose in this demo |
 |---|---|---|
-| `dynamic` block | Also loop-driven, but repeats a *nested block inside one resource* — not the whole resource. Contrasted directly below so the two aren't conflated. | Introduced in Demo 06; contrasted here |
-| `moved` block | Lets you rename a resource address (e.g. after switching `count` → `for_each`) without Terraform planning a destroy/recreate | Full coverage in Demo 08 |
-| `terraform state list` index/key filtering | Reading and targeting individual instances of a multi-instance resource from the CLI | Full coverage in Demo 08 |
+| `output` block (full depth) | Exposing values | `description`, `sensitive`, `ephemeral`, `depends_on` |
+| `sensitive = true` on output | Output argument | Redacts from `terraform output` display — visible via `-json` |
+| `ephemeral = true` on output | Output argument | Only valid in a **child module** — errors in the root module |
+| `depends_on` on output | Output argument | Forces an explicit dependency an output wouldn't otherwise have |
+| `terraform output` variants | CLI | Default (all), named (one), `-json`, `-raw` |
+| `data.terraform_remote_state` | Data source | Reads another configuration's outputs from its state file |
+| `aws_ssm_parameter` | Resource | `String` vs. `SecureString` — a second sharing pattern |
+
+**Related constructs worth knowing (not used in full here):**
+
+| Construct | What it is | Where it's covered in full |
+|---|---|---|
+| `variable` block | External input | Demo 05 |
+| `locals` block | Internally computed values | Demo 06 |
+| Child modules | Reusable configuration units | Not built in this series yet — referenced here only for the ephemeral-output restriction |
+| `for` expression (full) | Collection transformation | Demo 09 |
 
 ---
 
-#### `count` — index-based resource multiplicity
+### Detailed Explanation of New Constructs
 
-**What:** Setting `count = N` on a resource block tells Terraform to create N instances of that resource instead of one. Each instance is addressed by a zero-based integer index: `aws_sqs_queue.dlq[0]`, `aws_sqs_queue.dlq[1]`, `aws_sqs_queue.dlq[2]`.
-
-**Why:** Without `count`, creating three near-identical queues means writing three separate `resource` blocks that differ only in name — a maintenance and consistency risk (a config change has to be made in three places).
-
-**How:** Inside the resource block, `count.index` is available as the current iteration's index (0, 1, 2, ...). It's commonly used to build a unique name: `name = "cloudnova-notifications-dlq-${count.index}"`.
+#### `output` — Complete Argument Syntax
 
 ```hcl
-resource "aws_sqs_queue" "dlq" {
-  count = 3
-  name  = "cloudnova-notifications-dlq-${count.index}"
+output "role_arn" {
+  description = "ARN of the IAM deploy role"
+  value       = aws_iam_role.deploy.arn
+  sensitive   = false
+  depends_on  = [aws_iam_role_policy.deploy]
 }
 ```
 
-This Queue resource block is what Step 2 in Part A below applies — the `count = 3` argument is the only thing distinguishing this from three hand-written blocks, and `count.index` is what keeps the three resulting queue names from colliding.
-
-**What it does NOT do:** `count` gives you an *integer-indexed list* of instances. It has no concept of a meaningful name per instance beyond the index itself — if CloudNova later needs to remove queue index 1 specifically, Terraform doesn't know "queue 1" was semantically the staging queue; it only knows index 1. This index-only addressing is exactly what causes the reordering trap covered in Demo 08.
+| Argument | Required | Description |
+|---|---|---|
+| `value` | Yes | The expression to expose |
+| `description` | No | Human-readable description — shown by `terraform output` tooling |
+| `sensitive` | No | Redacts from `terraform output` display (not from `-json`) |
+| `ephemeral` | No | Never written to state — **root-module restriction applies, see below** |
+| `depends_on` | No | Forces an explicit dependency the `value` expression doesn't already imply |
 
 ---
 
-#### `for_each` — key-based resource multiplicity (map form)
+#### `sensitive = true` on an Output — Redacted Display, Not Redacted Data
 
-**What:** Setting `for_each = <map or set>` on a resource block creates one instance per entry. Unlike `count`, each instance is addressed by a **key you chose**, not a position: `aws_s3_bucket.env["dev"]`, `aws_s3_bucket.env["staging"]`.
-
-**Why:** CloudNova's per-environment buckets have real semantic identity — "dev," "staging," "prod" — not just a position in a list. `for_each` lets the *name itself* be the address, which survives reordering the input map (map keys have no order to begin with) and makes "add prod, remove dev" a targeted, unambiguous change.
-
-**How:** Inside the resource block, `each.key` is the map key (or the set value, if using a set) and `each.value` is the map value (or, for a set, identical to `each.key` since a set has no separate value).
+When `sensitive = true`: `terraform apply`'s final output list shows
+`(sensitive value)`; `terraform output` (default, no args) shows
+`(sensitive value)`; `terraform output -json` shows the actual value in
+plaintext; `terraform output <name>` alone still shows `(sensitive
+value)` unless `-raw` or `-json` is used.
 
 ```hcl
-variable "environments" {
-  type = map(string)
-  default = {
-    dev     = "us-east-2"
-    staging = "us-east-2"
-    prod    = "us-east-2"
+output "external_secret_label" {
+  value     = var.external_secret_label
+  sensitive = true
+}
+```
+
+> **Marking an output `sensitive` doesn't change what flows through
+> it — only how it displays.** If the underlying value is already
+> `sensitive` (like `var.external_secret_label` from Demo 05),
+> Terraform requires the output to also be marked `sensitive` — this
+> is enforced, not optional, and is exactly the check that catches
+> Break-Fix Error 1 below.
+
+---
+
+#### `ephemeral = true` on an Output — Child-Module-Only Restriction
+
+Demo 05 introduced the two valid ephemeral contexts: a child-module
+ephemeral output, and a write-only resource argument. This demo is
+where the child-module restriction actually matters — attempting an
+`ephemeral = true` output in a **root module** (which is what every
+demo in this series has been so far) errors:
+
+```hcl
+output "session_token_echo" {
+  value     = var.session_token
+  ephemeral = true
+}
+```
+
+```
+Error: Ephemeral outputs not allowed in root module
+  Ephemeral output values are only supported in child modules — the
+  root module's outputs are the module's boundary of stability.
+```
+
+> ⚠️ Simulated expected output — not from a live terminal run in this
+> environment.
+
+**Why the restriction exists:** an ephemeral value's entire point is
+that it's never persisted. A root-module output is the final,
+top-level result of `apply` — there's nothing "downstream" left to
+consume an ephemeral value safely at that point, so Terraform doesn't
+allow the combination at all. This series doesn't build child modules
+until later, so this restriction is explained here conceptually rather
+than demonstrated working.
+
+---
+
+#### `depends_on` on an Output
+
+```hcl
+output "role_arn" {
+  value      = aws_iam_role.deploy.arn
+  depends_on = [aws_iam_role_policy.deploy]
+}
+```
+
+**When this is needed:** normally, an output's `value` expression
+already creates an implicit dependency — referencing
+`aws_iam_role.deploy.arn` means Terraform waits for that resource.
+`depends_on` on an output is for the rarer case where the *value*
+doesn't reference a resource directly, but you still need Terraform to
+wait for it — for example, an output describing a side effect of a
+resource rather than one of its attributes.
+
+> **Most outputs never need `depends_on`.** If your `value` expression
+> already references the resource, the dependency is implicit and
+> automatic — only add `depends_on` when the value genuinely doesn't
+> reference what it logically depends on.
+
+---
+
+#### `terraform output` — All Variants
+
+| Command | Shows |
+|---|---|
+| `terraform output` | Every output, `sensitive` ones redacted |
+| `terraform output role_arn` | Just that one output, redacted if `sensitive` |
+| `terraform output -json` | Every output as JSON, **including sensitive values in plaintext** |
+| `terraform output -json role_arn` | Just that one, as JSON, plaintext even if `sensitive` |
+| `terraform output -raw role_arn` | Just the raw value, no quotes — plaintext even if `sensitive` |
+
+```bash
+terraform output
+terraform output role_arn
+terraform output -json
+terraform output -json role_arn
+terraform output -raw role_arn
+```
+
+> **`-json` and `-raw` both bypass `sensitive` redaction.** This isn't
+> a bug — it's why `sensitive` was never encryption to begin with (a
+> point already made about variables in Demo 05, and equally true for
+> outputs): the flag hides display, not access. Anyone who can run
+> `terraform output -json` already has access to state.
+
+---
+
+#### `data.terraform_remote_state` — Reading Another Configuration's Outputs
+
+```hcl
+data "terraform_remote_state" "iam" {
+  backend = "s3"
+  config = {
+    bucket = "tfstate-cloudnova-<account-id>-us-east-2"
+    key    = "phase-1/07-outputs-remote-state/terraform.tfstate"
+    region = "us-east-2"
   }
 }
 
-resource "aws_s3_bucket" "env" {
-  for_each = var.environments
-  bucket   = "cloudnova-${each.key}-assets"
-
-  tags = {
-    Environment = each.key
-    Region      = each.value
-  }
-}
+# Referenced as:
+data.terraform_remote_state.iam.outputs.role_arn
 ```
 
-This is the exact configuration Step 6 in Part B builds — `each.key` becomes both the bucket name suffix and the `Environment` tag value, and `each.value` (the region string in the map) becomes the `Region` tag, demonstrating that `each.value` doesn't have to be used for the resource's primary identity at all.
+**What it does:** reads the *entire state file* of another
+configuration (identified by backend + key) and exposes its outputs
+under `.outputs`. Requires only read access to that state's backend —
+no write access, no access to the other configuration's `.tf` files at
+all.
+
+**What it does NOT do:** it does not give the reading configuration any
+ability to modify the source configuration's resources — it's
+read-only by construction, since it's reading a state *file*, not
+invoking Terraform against that configuration.
+
+> **A `sensitive` output is still readable via remote state.** Per the
+> `sensitive`-vs-`ephemeral` distinction from Demo 05: `sensitive`
+> values persist in state, so `terraform_remote_state` can read them
+> (they'd display as `(sensitive value)` if you tried to output them
+> further downstream, following the same redaction rule). `ephemeral`
+> values are never in state at all — there's nothing for
+> `terraform_remote_state` to read.
 
 ---
 
-#### `for_each` over a set — the `toset()` conversion
-
-**What:** `for_each` accepts a map or a set of strings — **not a list**. If your input is a list (which is common — most variables default to lists), you must convert it with `toset()` first.
-
-**Why:** Terraform needs each `for_each` key to be stable and independent of position, so that adding/removing one element doesn't shift the identity of the others. A list is ordered and can contain duplicates; a set is unordered and inherently free of duplicates — which is what "each key is a stable identity" actually requires.
-
-**How:**
+#### `aws_ssm_parameter` — A Second Sharing Pattern
 
 ```hcl
-variable "cloudnova_iam_users" {
-  type    = list(string)
-  default = ["dev-readonly", "billing-auditor"]
-}
-
-resource "aws_iam_user" "svc" {
-  for_each = toset(var.cloudnova_iam_users)
-  name     = each.key
+resource "aws_ssm_parameter" "sns_topic_arn" {
+  name  = "/cloudnova/${var.environment}/sns-deploy-notifications-arn"
+  type  = "SecureString"
+  value = aws_sns_topic.deploy_notifications.arn
+  tags  = local.sns_tags
 }
 ```
 
-**What it does NOT do:** `toset()` does not silently drop or reorder anything you'd notice for uniqueness purposes — it removes exact duplicates (if the list had `["dev-readonly", "dev-readonly"]`, the set has one `"dev-readonly"`), which is a real behavior a learner should expect, not a bug.
+| Argument | Description |
+|---|---|
+| `name` | Parameter path — hierarchical, `/`-separated by convention |
+| `type` | `String` (plaintext) or `SecureString` (KMS-encrypted at rest) |
+| `value` | The value to store |
+
+**`String` vs. `SecureString`:** `String` stores the value in plaintext
+in Parameter Store. `SecureString` encrypts it with a KMS key (the
+default AWS-managed key unless `key_id` is specified) — decrypted only
+on read, by callers with `kms:Decrypt` permission. For any value that
+was `sensitive` upstream (like an ARN derived from a sensitive
+context, or literally any credential), `SecureString` is the correct
+choice — writing it as `String` is exactly Break-Fix Error 3 below.
 
 ---
 
-#### Splat expressions (`[*]`) — collecting one attribute across every instance
+#### Sharing Patterns — Remote State vs. SSM vs. Env Vars vs. Hardcoding
 
-**What:** A splat expression, `resource.name[*].attribute`, returns a list containing that attribute from every instance of a `count`- or `for_each`-driven resource — without writing a `for` expression.
-
-**Why:** After creating 3 SQS queues via `count`, CloudNova's application needs all three ARNs to configure a fan-out subscription. Writing `[aws_sqs_queue.dlq[0].arn, aws_sqs_queue.dlq[1].arn, aws_sqs_queue.dlq[2].arn]` by hand doesn't scale if the count changes; the splat expression does.
-
-**How:**
-
-```hcl
-output "dlq_arns" {
-  value = aws_sqs_queue.dlq[*].arn
-}
-```
-
-**Splat vs. `for` expression — why this approach, not that one:** A `for` expression (`[for q in aws_sqs_queue.dlq : q.arn]`) produces the identical result here and is strictly more powerful (it supports filtering and transforming). Splat is the terser choice specifically for the common case of "give me one unmodified attribute from every instance, no filtering" — use `for` the moment you need a condition or a transformation on the result.
-
-**`for_each` splat note:** on a `for_each` resource, `resource.name[*].attribute` returns the values in an **unspecified but consistent-within-a-plan order** (map iteration order) — not keyed. If you need the key alongside the value, use a `for` expression over `resource.name` instead: `{ for k, v in aws_s3_bucket.env : k => v.arn }`.
-
----
-
-#### `count` vs `for_each` vs `dynamic` — concept comparison
-
-These three are easy to conflate because all three are "loop over something in Terraform." They operate at different scopes:
-
-| | Repeats | Addressed by | Typical use |
+| Pattern | Read access needed | Write coupling | Best for |
 |---|---|---|---|
-| `count` | The entire resource block | Integer index (`[0]`) | N identical/near-identical resources, position doesn't carry meaning |
-| `for_each` | The entire resource block | Map key or set value (`["prod"]`) | N resources with a meaningful, stable identity per instance |
-| `dynamic` | One nested block *inside* a single resource | N/A — it's not a separate resource instance at all | A variable number of repeated sub-blocks (e.g. `ingress {}`) within one resource |
+| `terraform_remote_state` | Read access to the source state backend | None — fully decoupled reads | Terraform-to-Terraform sharing, same team/org |
+| SSM Parameter Store | `ssm:GetParameter` IAM permission | None — fully decoupled reads | Cross-team, cross-tool (non-Terraform consumers too), sensitive values via `SecureString` |
+| Environment variables (`TF_VAR_`) | N/A — set at runtime | Manual, per-run | CI/CD pipeline injection, not persistent sharing |
+| Hardcoding the value | N/A | Full — breaks the moment the source changes | Never, for anything that can change |
 
-**Bidirectional distinction:** `for_each` on a resource creates multiple *state entries* (`aws_s3_bucket.env["dev"]`, `aws_s3_bucket.env["prod"]` — two separate objects Terraform tracks independently). A `dynamic "ingress"` block inside one `aws_security_group` resource creates multiple *nested block instances inside one state entry* — there is still only one `aws_security_group.this` in state, just with several `ingress` blocks inside it.
-
----
-
-#### Why `count` and `for_each` cannot coexist on one resource block
-
-**What:** A single resource block may use `count` **or** `for_each`, never both.
-
-**Why:** Both arguments answer the same underlying question — "how many instances, and how do I address each one?" — with two different, incompatible addressing schemes (integer index vs. arbitrary key). Terraform has no way to reconcile "the third instance" with "the instance named prod" if both were active simultaneously, so it rejects the configuration at the validation stage rather than guessing.
-
-**How this is diagnosed:** covered directly in Break-Fix below — this is one of the three deliberate errors in this demo's scenario.
+> **When to choose SSM over remote state:** when the consumer isn't
+> Terraform at all (an application reading its own config at runtime),
+> or when you don't want to grant state-backend read access just to
+> share one value. Remote state is the better choice for
+> Terraform-to-Terraform sharing on the same team, since it doesn't
+> require provisioning a new resource just to pass a value along.
 
 ---
 
@@ -261,284 +411,399 @@ These three are easy to conflate because all three are "loop over something in T
 
 ---
 
-### Part A — Count Fundamentals: CloudNova Notification Dead-Letter Queues
+## Part A — Rebuilding the Baseline & Marking Outputs
 
-**What you accomplish in Part A:** CloudNova's notification service needs three SQS dead-letter queues, identical except for name, to shard failed-message retries across. You'll build them with `count`, verify the addressing, and collect their ARNs with a splat expression.
+**What you accomplish in Part A:** recreate the IAM role and SNS topic
+exactly as Demo 06 left them, then write this demo's actual focus —
+`07-outputs.tf` with full argument depth: `sensitive`, the ephemeral
+restriction (explained, not demonstrated working), and `depends_on`.
 
-#### Step 1 — Initialize the working directory
-
-This step establishes a clean Terraform working directory before any `count`/`for_each` code is written, so `init` failures are ruled out before we introduce new syntax.
+### Step 1 — Navigate to the project
 
 ```bash
-cd src/
+cd terraform-aws-mastery/phase-1-foundations/07-outputs-remote-state/src
+```
+
+### Step 2 — Create the source files
+
+---
+
+#### `01-versions.tf` — Provider and Terraform version pins
+
+**01-versions.tf:**
+
+```hcl
+terraform {
+  required_version = "~> 1.15.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.47.0"
+    }
+  }
+}
+```
+
+---
+
+#### `02-provider.tf` — AWS provider configuration
+
+**02-provider.tf:**
+
+```hcl
+provider "aws" {
+  region  = var.aws_region
+  profile = var.aws_profile
+
+  default_tags {
+    tags = local.common_tags
+  }
+}
+```
+
+---
+
+#### `03-variables.tf` — Demo 06's finished variable set, recreated
+
+**What this file does in this demo:** provides the same inputs Demo 06
+finished with — `role_config` and `extra_tags` included — no new
+variables are needed for output/remote-state teaching itself.
+
+**03-variables.tf:** *(identical to Demo 06's finished `03-variables.tf`
+— all of Demo 05's variables plus `role_config` and `extra_tags`)*
+
+---
+
+#### `04-locals.tf` — Demo 06's finished locals, recreated
+
+**What this file does in this demo:** recreates Demo 06's complete
+locals block — role locals (including `try()`/`coalesce()`) and SNS
+locals (`sns_topic_name`, `sns_topic_policy`, `sns_tags`) — unchanged.
+This demo adds no new locals; it exposes what's already computed.
+
+**04-locals.tf:** *(identical to Demo 06's finished `04-locals.tf`)*
+
+---
+
+#### `05-main.tf` — The IAM role and its inline policy
+
+**What this file does in this demo:** unchanged from Demo 06.
+
+**05-main.tf:** *(identical to Demo 06's `05-main.tf`)*
+
+---
+
+#### `06-sns.tf` — The SNS topic
+
+**What this file does in this demo:** unchanged from Demo 06.
+
+**06-sns.tf:** *(identical to Demo 06's `06-sns.tf`)*
+
+---
+
+#### `07-outputs.tf` — Full output argument depth
+
+**What this file does in this demo:** this is the file this entire
+demo is about. `role_arn` demonstrates `depends_on` explicitly (even
+though it's not strictly required here, to show the syntax);
+`external_secret_label_out` demonstrates a `sensitive` output required
+because its source variable is sensitive; `sns_topic_arn` is what
+Part B and Part C both consume.
+
+**07-outputs.tf:**
+
+```hcl
+output "role_name" {
+  description = "Name of the IAM deploy role"
+  value       = aws_iam_role.deploy.name
+}
+
+output "role_arn" {
+  description = "ARN of the IAM deploy role"
+  value       = aws_iam_role.deploy.arn
+  depends_on  = [aws_iam_role_policy.deploy]
+}
+
+# Required to be sensitive — the source variable is sensitive, and
+# Terraform enforces that the output must be too (Break-Fix Error 1
+# shows what happens if you don't).
+output "external_secret_label_out" {
+  description = "Echoes the sensitive demo variable from Demo 05"
+  value       = var.external_secret_label
+  sensitive   = true
+}
+
+output "sns_topic_arn" {
+  description = "ARN of the deploy-notifications SNS topic"
+  value       = aws_sns_topic.deploy_notifications.arn
+}
+```
+
+---
+
+### Step 3 — Apply and confirm sensitive redaction
+
+```bash
 terraform init
-```
-
-Expected output:
-```
-Terraform has been successfully initialized!
-```
-> ⚠️ Simulated expected output — not from a live terminal run. Verify before following.
-
-**# Observation:** A clean `init` here confirms the provider block and version constraints (Step 1's `01-providers.tf`) are valid before we add any `count`/`for_each` resources — isolating any later error to the new syntax, not to setup.
-
-#### Step 2 — Write the `count`-based queue resource
-
-This step creates the three dead-letter queues. `count = var.dlq_count` (defaulting to 3) is the only thing distinguishing this from three separate hand-written resource blocks.
-
-**`03-count-queues.tf`:**
-```hcl
-resource "aws_sqs_queue" "dlq" {
-  count = var.dlq_count
-  name  = "cloudnova-notifications-dlq-${count.index}"
-
-  tags = {
-    Environment = "shared"
-    ManagedBy   = "terraform-demo-07"
-  }
-}
-```
-
-#### Step 3 — Plan, apply, and verify addressing
-
-```bash
-terraform plan -out=demo07.tfplan
-terraform apply demo07.tfplan
-aws sqs list-queues --queue-name-prefix cloudnova-notifications-dlq
-```
-
-Expected output (`list-queues`):
-```json
-{
-    "QueueUrls": [
-        "https://sqs.us-east-2.amazonaws.com/<account-id>/cloudnova-notifications-dlq-0",
-        "https://sqs.us-east-2.amazonaws.com/<account-id>/cloudnova-notifications-dlq-1",
-        "https://sqs.us-east-2.amazonaws.com/<account-id>/cloudnova-notifications-dlq-2"
-    ]
-}
-```
-> ⚠️ Simulated expected output — not from a live terminal run. Verify before following.
-
-**# Observation:** Three queues exist, named `-0` through `-2` — confirming `count.index` produced the expected 0-based sequence. Note the account ID is redacted here since it differs per user; never hardcode a value like this when documenting your own run.
-
-#### Step 4 — Collect ARNs with a splat expression
-
-This step demonstrates why splat expressions matter: without one, referencing all three queue ARNs elsewhere would mean hardcoding three separate index references.
-
-**`05-outputs.tf`** (partial — DLQ portion):
-```hcl
-output "dlq_arns" {
-  description = "ARNs of all CloudNova notification DLQs, collected via splat expression"
-  value       = aws_sqs_queue.dlq[*].arn
-}
-```
-
-```bash
-terraform output dlq_arns
-```
-
-Expected output:
-```
-dlq_arns = [
-  "arn:aws:sqs:us-east-2:<account-id>:cloudnova-notifications-dlq-0",
-  "arn:aws:sqs:us-east-2:<account-id>:cloudnova-notifications-dlq-1",
-  "arn:aws:sqs:us-east-2:<account-id>:cloudnova-notifications-dlq-2",
-]
-```
-> ⚠️ Simulated expected output — not from a live terminal run. Verify before following.
-
-**# Observation:** All three ARNs appear in a single list in index order — this is the value a downstream fan-out subscription resource would consume, without the config needing to know how many queues exist ahead of time.
-
----
-
-### Part B — For-Each Fundamentals: Per-Environment Buckets and a `toset()` Example
-
-**What you accomplish in Part B:** CloudNova needs one S3 bucket per environment (dev/staging/prod) with environment-specific tags, and two read-only IAM users defined from a plain list variable. You'll build both with `for_each`, contrasting map-based and set-based input.
-
-#### Step 5 — Declare the environment map and user list
-
-This step adds the input variables `for_each` will consume — a map for the buckets (key = environment name, value = region) and a list for the IAM users (converted to a set at the point of use).
-
-**`02-variables.tf`** (relevant portion):
-```hcl
-variable "environments" {
-  description = "CloudNova environments to provision a bucket for, keyed by name"
-  type        = map(string)
-  default = {
-    dev     = "us-east-2"
-    staging = "us-east-2"
-    prod    = "us-east-2"
-  }
-}
-
-variable "cloudnova_iam_users" {
-  description = "Read-only IAM users to create — a list, converted to a set for for_each"
-  type        = list(string)
-  default     = ["dev-readonly", "billing-auditor"]
-}
-
-variable "dlq_count" {
-  description = "Number of dead-letter queues to create via count"
-  type        = number
-  default     = 3
-}
-```
-
-#### Step 6 — Write the `for_each` bucket resource
-
-This step creates one bucket per map entry, keyed by environment name rather than by position — so "add a fourth environment" or "remove staging" is a one-line map change with no risk of touching the wrong bucket.
-
-**`04-foreach-buckets.tf`:**
-```hcl
-resource "aws_s3_bucket" "env" {
-  for_each = var.environments
-  bucket   = "cloudnova-${each.key}-assets"
-
-  tags = {
-    Environment = each.key
-    Region      = each.value
-    ManagedBy   = "terraform-demo-07"
-  }
-}
-```
-
-#### Step 7 — Plan, apply, and verify key-based addressing
-
-```bash
-terraform plan -out=demo07-buckets.tfplan
-terraform apply demo07-buckets.tfplan
-aws s3 ls | grep cloudnova
-```
-
-Expected output:
-```
-2026-07-15 09:14:02 cloudnova-dev-assets
-2026-07-15 09:14:03 cloudnova-prod-assets
-2026-07-15 09:14:03 cloudnova-staging-assets
-```
-> ⚠️ Simulated expected output — not from a live terminal run. Verify before following.
-
-**# Observation:** Bucket names carry the environment name directly — there's no need to cross-reference an index to know which bucket is which, unlike the DLQ queues in Part A. `aws s3 ls` sorts alphabetically, which is why `prod` appears before `staging` here — that ordering is a CLI display artifact, not the order Terraform created them in.
-
-#### Step 8 — Add the `toset()`-based IAM users
-
-This step demonstrates converting a `list(string)` variable into the set `for_each` requires, using the same `for_each` mechanism as Step 6 but over a converted list instead of a native map.
-
-**`04-foreach-buckets.tf`** (append):
-```hcl
-resource "aws_iam_user" "svc" {
-  for_each = toset(var.cloudnova_iam_users)
-  name     = each.key
-
-  tags = {
-    ManagedBy = "terraform-demo-07"
-  }
-}
-```
-
-Note `each.value` is available here too, but on a set it's always identical to `each.key` — there's no separate "value" concept for a set, only a converted-list-of-keys.
-
-#### Step 9 — Verify the IAM users
-
-```bash
-terraform apply -auto-approve
-aws iam list-users --query "Users[?starts_with(UserName, 'dev-') || starts_with(UserName, 'billing-')].UserName"
-```
-
-Expected output:
-```
-[
-    "billing-auditor",
-    "dev-readonly"
-]
-```
-> ⚠️ Simulated expected output — not from a live terminal run. Verify before following.
-
-**# Observation:** Both users from the `cloudnova_iam_users` list variable now exist as individually addressable resources (`aws_iam_user.svc["dev-readonly"]`, `aws_iam_user.svc["billing-auditor"]`) — the `toset()` conversion didn't lose any list entries, since the two values were already unique.
-
----
-
-### Part C — The Decision Framework
-
-**What you accomplish in Part C:** With both mechanisms built, you'll apply CloudNova's decision framework to classify new scenarios, then deliberately trigger and read the error Terraform gives when both mechanisms are combined on one resource.
-
-#### Step 10 — Apply the decision framework to three new scenarios
-
-This step is a reasoning exercise, not a code change — it checks that the concept, not just the syntax, transferred.
-
-| Scenario | `count`, `for_each`, or single resource? | Why |
-|---|---|---|
-| 5 identical CloudWatch log groups for 5 microservices with interchangeable names (`service-log-0` .. `service-log-4`) | `count` | Instances are truly interchangeable; no name carries independent meaning |
-| One S3 bucket per AWS region CloudNova operates in (`us-east-2`, `eu-west-1`) | `for_each` (set of region strings) | Each instance has a meaningful, stable identity (the region) that must survive adding a third region later |
-| CloudNova's single production VPC | Single resource, no `count`/`for_each` | There is exactly one; multiplicity constructs exist to avoid repetition, not to formalize a singleton |
-
-#### Step 11 — Deliberately trigger the mutual-exclusion error
-
-This step shows the exact validation failure Terraform produces when `count` and `for_each` both appear on one resource block — the same error diagnosed cold in Break-Fix below, seen here for the first time with the cause already known.
-
-```hcl
-# Do NOT leave this in the working config — for demonstration only
-resource "aws_sqs_queue" "invalid_example" {
-  count    = 2
-  for_each = toset(["a", "b"])
-  name     = "invalid-example"
-}
-```
-
-```bash
 terraform validate
+terraform apply
 ```
 
-Expected output:
+Type `yes`. Expected output:
+
 ```
-Error: Invalid combination of "count" and "for_each"
+Apply complete! Resources: 3 added, 0 changed, 0 destroyed.
 
-  on 03-count-queues.tf line 14, in resource "aws_sqs_queue" "invalid_example":
-  14:   for_each = toset(["a", "b"])
+Outputs:
 
-The "count" and "for_each" meta-arguments are mutually-exclusive, only one
-should be used to be explicit about the number of resources to be created.
+external_secret_label_out = <sensitive>
+role_arn = "arn:aws:iam::163125980376:role/cloudnova-dev-deploy-role"
+role_name = "cloudnova-dev-deploy-role"
+sns_topic_arn = "arn:aws:sns:us-east-2:163125980376:cloudnova-dev-deploy-notifications"
 ```
-> ⚠️ Simulated expected output — not from a live terminal run. Verify before following. The exact wording of this error message has not been confirmed against a live `terraform validate` run in this environment — treat the surrounding cause/fix explanation as reliable, but verify literal wording before quoting it elsewhere.
 
-**# Observation:** Terraform catches this at `validate` time, before any AWS API call — this is a static configuration error, not a runtime one. Remove the block (or the `for_each` line) before continuing; it must not remain in `03-count-queues.tf`.
+> ⚠️ Simulated expected output — not from a live terminal run in this
+> environment.
+
+> **`external_secret_label_out` shows `<sensitive>` right in the apply
+> summary** — this is the same redaction `terraform output` applies
+> afterward, visible immediately at apply time.
+
+---
+
+## Part B — Output Variants & Remote State
+
+**What you accomplish in Part B:** exercise every `terraform output`
+variant against the outputs from Part A, then stand up a completely
+separate Terraform configuration that reads `role_arn` back via
+`terraform_remote_state` — with no write access to this configuration
+at all.
+
+### Step 1 — Exercise every `terraform output` variant
+
+```bash
+terraform output
+```
+
+Expected:
+
+```
+external_secret_label_out = <sensitive>
+role_arn = "arn:aws:iam::163125980376:role/cloudnova-dev-deploy-role"
+role_name = "cloudnova-dev-deploy-role"
+sns_topic_arn = "arn:aws:sns:us-east-2:163125980376:cloudnova-dev-deploy-notifications"
+```
+
+```bash
+terraform output role_arn
+```
+
+Expected: `"arn:aws:iam::163125980376:role/cloudnova-dev-deploy-role"`
+
+```bash
+terraform output external_secret_label_out
+```
+
+Expected: `<sensitive>`
+
+```bash
+terraform output -json external_secret_label_out
+```
+
+Expected: `"demo-secret-label"` — plaintext, `-json` bypasses redaction.
+
+```bash
+terraform output -raw role_arn
+```
+
+Expected: `arn:aws:iam::163125980376:role/cloudnova-dev-deploy-role`
+(no quotes — `-raw` is meant for shell scripting, e.g. `$(terraform
+output -raw role_arn)`).
+
+> ⚠️ Simulated expected output for all five commands above — not from
+> a live terminal run in this environment.
+
+### Step 2 — Create the remote-state consumer configuration
+
+**`consumer/main.tf`:**
+
+```hcl
+terraform {
+  required_version = "~> 1.15.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.47.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "us-east-2"
+}
+
+data "terraform_remote_state" "outputs_demo" {
+  backend = "s3"
+  config = {
+    bucket = "tfstate-cloudnova-<account-id>-us-east-2"
+    key    = "phase-1/07-outputs-remote-state/terraform.tfstate"
+    region = "us-east-2"
+  }
+}
+
+output "consumed_role_arn" {
+  description = "role_arn read back from the main configuration's state"
+  value       = data.terraform_remote_state.outputs_demo.outputs.role_arn
+}
+
+output "consumed_sns_arn" {
+  description = "sns_topic_arn read back from the main configuration's state"
+  value       = data.terraform_remote_state.outputs_demo.outputs.sns_topic_arn
+}
+```
+
+Replace `<account-id>` with your own account ID before applying.
+
+### Step 3 — Apply the consumer configuration and verify
+
+```bash
+cd consumer/
+terraform init
+terraform apply
+```
+
+Type `yes`. Expected output:
+
+```
+Outputs:
+
+consumed_role_arn = "arn:aws:iam::163125980376:role/cloudnova-dev-deploy-role"
+consumed_sns_arn = "arn:aws:sns:us-east-2:163125980376:cloudnova-dev-deploy-notifications"
+```
+
+> ⚠️ Simulated expected output — not from a live terminal run in this
+> environment.
+
+> **This `consumer/` configuration has never opened `05-main.tf` or
+> `06-sns.tf`.** It only knows the S3 bucket/key where the main
+> configuration's state lives, and its IAM permissions only need
+> `s3:GetObject` on that one state file — no IAM, SNS, or any other
+> service permission from the main configuration's own permission set.
+
+### Step 4 — Confirm `sensitive` outputs remain redacted through remote state
+
+```bash
+cd ../
+terraform output -raw external_secret_label_out
+```
+
+If you were to add `data.terraform_remote_state.outputs_demo.outputs.external_secret_label_out`
+to an output in `consumer/main.tf` without marking that new output
+`sensitive`, Terraform would require the `sensitive` flag there too —
+the redaction requirement propagates through remote state the same way
+it propagates through any other reference to a sensitive value.
+
+```bash
+cd consumer/
+terraform destroy
+cd ../
+```
+
+Clean up the consumer configuration now — it was for demonstration only
+and isn't part of this demo's Cleanup section below.
+
+---
+
+## Part C — SSM Parameter Store as a Second Sharing Pattern
+
+**What you accomplish in Part C:** write the SNS topic ARN to Parameter
+Store as a `SecureString`, read it back independently of Terraform
+state entirely, and confirm it matches the real topic ARN.
+
+### Step 1 — Create `08-ssm.tf`
+
+**08-ssm.tf:**
+
+```hcl
+resource "aws_ssm_parameter" "sns_topic_arn" {
+  name  = "/cloudnova/${var.environment}/sns-deploy-notifications-arn"
+  type  = "SecureString"
+  value = aws_sns_topic.deploy_notifications.arn
+  tags  = local.sns_tags
+}
+```
+
+### Step 2 — Apply and verify against the real topic ARN
+
+```bash
+terraform apply
+aws ssm get-parameter \
+  --name "/cloudnova/dev/sns-deploy-notifications-arn" \
+  --with-decryption \
+  --query "Parameter.Value" --output text
+```
+
+Expected: matches `terraform output -raw sns_topic_arn` exactly —
+`arn:aws:sns:us-east-2:163125980376:cloudnova-dev-deploy-notifications`.
+
+> ⚠️ Simulated expected output — not from a live terminal run in this
+> environment.
+
+> **`--with-decryption` is required for `SecureString`.** Without it,
+> `get-parameter` returns the KMS-encrypted ciphertext, not the
+> plaintext ARN — a real, common mistake when reading `SecureString`
+> parameters from the CLI for the first time.
 
 ---
 
 ## Cleanup
 
-Destroy every resource created in this demo before moving on, and confirm the account is clean afterward.
-
 ```bash
-cd src/
 terraform destroy
 ```
 
-Type `yes` when prompted. This removes all 3 SQS queues, all 3 S3 buckets, and both IAM users in one operation, since all are tracked in the same state file.
+Type `yes`. Expected: `Destroy complete! Resources: 4 destroyed.`
+(IAM role, inline policy, SNS topic, SSM parameter).
 
-Verify a clean teardown:
+> ⚠️ Simulated expected output — not from a live terminal run in this
+> environment.
+
+Confirm the `consumer/` configuration was already destroyed in Part B
+Step 3 — if not:
 
 ```bash
-aws sqs list-queues --queue-name-prefix cloudnova-notifications-dlq
-aws s3 ls | grep cloudnova
-aws iam list-users --query "Users[?starts_with(UserName, 'dev-') || starts_with(UserName, 'billing-')].UserName"
+cd consumer/
+terraform destroy
+cd ../
 ```
 
-Expected: all three commands return empty results.
-> ⚠️ Simulated expected output — not from a live terminal run. Verify before following.
+```
+Console → IAM → Roles → cloudnova-dev-deploy-role: GONE ✅
+Console → SNS → Topics → cloudnova-dev-deploy-notifications: GONE ✅
+Console → Systems Manager → Parameter Store → /cloudnova/dev/sns-deploy-notifications-arn: GONE ✅
+```
 
 ---
 
 ## What You Learned
 
-1. ✅ Created three SQS dead-letter queues using `count` and referenced each via `count.index`
-2. ✅ Created one S3 bucket per environment using `for_each` over a map, keyed by `each.key`
-3. ✅ Converted a `list(string)` variable to a set with `toset()` to satisfy `for_each`
-4. ✅ Collected all three queue ARNs into a single output using a splat expression (`[*]`)
-5. ✅ Verified individual instance addressing — `aws_sqs_queue.dlq[0]` vs `aws_s3_bucket.env["prod"]`
-6. ✅ Applied the `count`/`for_each`/single-resource decision framework to three new scenarios
-7. ✅ Diagnosed and fixed three deliberate `count`/`for_each` authoring errors (Break-Fix, below)
-8. ✅ Triggered and read Terraform's mutual-exclusion error for `count` + `for_each` on one block, and explained why it exists
+1. ✅ `sensitive` on an output redacts `terraform output`'s default
+   display but not `-json`/`-raw` — and is *required* if the
+   underlying value is itself sensitive
+2. ✅ `ephemeral` outputs are restricted to child modules — a root
+   module's outputs are the final, stable result of `apply`, with
+   nothing downstream left to consume an ephemeral value safely
+3. ✅ `depends_on` on an output is for the rare case where `value`
+   doesn't already imply the dependency you need
+4. ✅ `terraform output`, `-json`, and `-raw` each serve a different
+   consumer — human display, scripted JSON parsing, and shell
+   variable capture respectively
+5. ✅ `terraform_remote_state` reads another configuration's outputs
+   with zero write access — and zero access to its `.tf` files at all
+6. ✅ SSM Parameter Store (`String` vs. `SecureString`) is a second
+   sharing pattern, better suited to non-Terraform consumers or
+   cross-team boundaries than remote state
 
 ---
 
@@ -548,65 +813,77 @@ Expected: all three commands return empty results.
 
 | Demo concept / command | Exam objective | Notes |
 |---|---|---|
-| `count` and `count.index` | TA-004 Obj (configuration language / resource management) | Common exam pattern: "how many resources does this config create?" |
-| `for_each` and `each.key`/`each.value` | TA-004 Obj (configuration language / resource management) | Frequently tested against a map input specifically |
-| Splat expression `[*]` | TA-004 Obj 4 (variables/outputs and expressions) | Often tested as "what does this output value evaluate to" |
-| `count`/`for_each` mutual exclusion | TA-004 Obj (configuration language) | Common trap question — expects you to identify the invalid config |
+| `sensitive` on output vs. `-json`/`-raw` | TA-004 Obj 4 (Terraform outside core workflow) | Common trap: assuming `-json` also redacts |
+| Ephemeral output root-module restriction | TA-004 Obj 4 | Frequently tested against child modules specifically |
+| `terraform_remote_state` | TA-004 Obj 4 | Read-only by construction — no write access to the source config |
+| `aws_ssm_parameter` `String` vs `SecureString` | TA-004 Obj (AWS resource management) | `SecureString` requires `--with-decryption` on read |
 
 ### Common Exam Traps
 
 | Scenario | What the task actually requires | Common wrong approach |
 |---|---|---|
-| Exam shows a resource with both `count` and a `for_each`-style map reference | Recognize this configuration is invalid and would fail `validate` | Assuming Terraform merges the two or that `for_each` "wins" |
-| Exam asks for the resource address of the second instance created by `count = 3` | `resource_type.name[1]` (zero-indexed) | Answering `resource_type.name[2]` (treating it as 1-indexed) |
-| Exam shows `for_each` over a `list(string)` variable directly | Recognize this is invalid without `toset()` and would fail | Assuming `for_each` accepts lists natively like `count` accepts a number |
+| Exam asks whether `terraform output -json` redacts a sensitive output | Recognizing `-json` shows the plaintext value regardless of `sensitive` | Assuming `sensitive` redacts everywhere, including `-json`/`-raw` |
+| Exam shows an `ephemeral = true` output in a root module | Recognizing this errors — ephemeral outputs are child-module only | Assuming `ephemeral` works identically on variables and outputs everywhere |
+| Exam reads an `SecureString` parameter without `--with-decryption` | Recognizing the returned value is still KMS ciphertext | Assuming `get-parameter` always returns plaintext regardless of type |
+| Exam asks what access `terraform_remote_state` grants to the source configuration | Recognizing it's read-only — state file access, not `.tf` file or apply access | Assuming remote state read access implies some ability to modify the source |
 
 ### Exam Task — Write a complete configuration
 
-**Task:** CloudNova needs two things in one configuration: (1) three identical CloudWatch log groups named `app-log-0` through `app-log-2` using `count`, and (2) one S3 bucket per entry in a map variable `environments` (dev, staging, prod) using `for_each`, each tagged with its environment name. Write both from scratch.
+**Task:** CloudNova needs to expose two outputs from an existing
+`aws_db_instance.primary` resource: a `db_endpoint` output (not
+sensitive), and a `db_password_out` output that echoes a `sensitive =
+true` variable `var.db_password` used to create the instance. Write
+both outputs from scratch, and write the `terraform_remote_state` data
+source another configuration would use to read `db_endpoint` back.
 
-**Block types required:** `resource` (x2, one using `count`, one using `for_each`), `variable` (the `environments` map)
+**Block types required:** `output` (×2, one requiring `sensitive`),
+`data "terraform_remote_state"` (×1)
 
 **Official documentation:**
-- [Count Meta-Argument](https://developer.hashicorp.com/terraform/language/meta-arguments/count)
-- [For_Each Meta-Argument](https://developer.hashicorp.com/terraform/language/meta-arguments/for_each)
+- [Output Values](https://developer.hashicorp.com/terraform/language/values/outputs)
+- [`terraform_remote_state` Data Source](https://developer.hashicorp.com/terraform/language/state/remote-state-data)
 
 **What to practise:**
-1. Open the `for_each` meta-argument page — navigate to the "Limitations" section covering the map/set requirement
-2. Write the configuration from scratch without looking at Part A/B of this demo
+1. Open the Output Values page — confirm which display commands bypass
+   `sensitive` redaction and which don't
+2. Write the configuration from scratch without looking at this
+   demo's `07-outputs.tf`
 3. Validate: `terraform init && terraform validate`
 
 <details>
 <summary>Reference solution (open only after attempting)</summary>
 
 ```hcl
-variable "environments" {
-  type = map(string)
-  default = {
-    dev     = "us-east-2"
-    staging = "us-east-2"
-    prod    = "us-east-2"
+output "db_endpoint" {
+  description = "Connection endpoint for the primary database"
+  value       = aws_db_instance.primary.endpoint
+}
+
+output "db_password_out" {
+  description = "Echoes the sensitive DB password variable"
+  value       = var.db_password
+  sensitive   = true
+}
+
+# In the consuming configuration:
+data "terraform_remote_state" "db" {
+  backend = "s3"
+  config = {
+    bucket = "tfstate-example-bucket"
+    key    = "path/to/this/config/terraform.tfstate"
+    region = "us-east-2"
   }
 }
 
-resource "aws_cloudwatch_log_group" "app" {
-  count = 3                                    # index-based — names are interchangeable
-  name  = "app-log-${count.index}"
-}
-
-resource "aws_s3_bucket" "env" {
-  for_each = var.environments                  # key-based — environment name carries meaning
-  bucket   = "cloudnova-${each.key}-assets"
-
-  tags = {
-    Environment = each.key
-  }
-}
+# Referenced as: data.terraform_remote_state.db.outputs.db_endpoint
 ```
 
 **Arguments you must know without looking up:**
-- `count.index` — zero-based, not one-based; a common exam trap when asked "what is the third instance's address"
-- `for_each` requires a map or a set — a bare `list(string)` variable must be wrapped in `toset()` first
+- An output referencing a `sensitive` variable/value must itself be
+  marked `sensitive` — Terraform enforces this, it isn't optional
+- `terraform_remote_state`'s `config` block needs `bucket`, `key`, and
+  `region` for an S3 backend — matching the source configuration's own
+  backend configuration exactly
 
 </details>
 
@@ -614,32 +891,44 @@ resource "aws_s3_bucket" "env" {
 
 ## Troubleshooting
 
-| Symptom/Error | Cause | Fix |
+| Error | Cause | Fix |
 |---|---|---|
-| `Error: Invalid for_each argument` — value depends on resource attributes that cannot be determined until apply | `for_each` was set to something computed from a resource not yet created (e.g. `for_each = aws_instance.example[*].id`) | Restructure so the `for_each` input is a variable, `local`, or data source value known at plan time — not a downstream resource attribute |
-| `for_each` value is a list, not a map or set | A `list(string)`/`list(object(...))` variable passed directly to `for_each` | Wrap in `toset()` for a plain list of strings, or convert to a map keyed by a stable field for a list of objects |
-| Splat expression returns an empty list unexpectedly | Referencing `resource.name[*].attribute` on a resource whose `count` evaluated to 0 | Confirm the `count`/`for_each` input isn't empty — check the variable's actual value with `terraform console` |
+| `Error: Output refers to sensitive values` | An output's `value` references a `sensitive` variable/resource attribute without `sensitive = true` on the output itself | Add `sensitive = true` to the output |
+| `Error: Ephemeral outputs not allowed in root module` | An `ephemeral = true` output declared in the root module | Ephemeral outputs are child-module only — remove the flag, or move the output into a child module |
+| `get-parameter` returns garbled/encrypted text instead of the expected value | Missing `--with-decryption` on a `SecureString` parameter | Add `--with-decryption` to the `aws ssm get-parameter` call |
+| `terraform_remote_state` returns an error about the backend/key | `bucket`/`key`/`region` in the `config` block don't match the source configuration's actual backend | Confirm the exact bucket name and state key path from the source configuration's own `01-versions.tf` |
 
 ---
 
 ## Break-Fix Scenario
 
-CloudNova's junior engineer was asked to extend the notification-queue and bucket configuration and introduced three separate errors. Diagnose each using only `terraform validate`/`terraform plan` output — do not open the answers first.
+Three deliberate errors. Diagnose using `terraform validate` and
+`terraform plan`/`apply` — do not look at answers first.
 
 ```bash
 cd src/break-fix/
 terraform init
 terraform validate
+terraform plan
 ```
 
-**`broken.tf`** (all three errors, self-contained with its own `terraform {}` block):
+#### `broken.tf` — Three deliberate output/sharing-pattern errors
+
+**What this file does in this demo:** a self-contained configuration
+with a sensitive value exposed through a non-sensitive output, an
+`ephemeral` output declared in the root module, and a sensitive ARN
+written to Parameter Store as plaintext `String` instead of
+`SecureString` — diagnose all three.
+
+**broken.tf:**
+
 ```hcl
 terraform {
-  required_version = ">= 1.9.0, < 2.0.0"
+  required_version = "~> 1.15.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 6.0"
+      version = "~> 6.47.0"
     }
   }
 }
@@ -648,71 +937,63 @@ provider "aws" {
   region = "us-east-2"
 }
 
-# Error 1: for_each given a duplicate-key map — will fail before we even reach the AWS API
-resource "aws_s3_bucket" "env" {
-  for_each = {
-    dev  = "us-east-2"
-    dev  = "us-west-2"
-  }
-  bucket = "cloudnova-${each.key}-broken"
+variable "db_password" {
+  type      = string
+  sensitive = true
+  default   = "demo-password-value"
 }
 
-# Error 2: count and for_each on the same resource
-resource "aws_sqs_queue" "dlq" {
-  count    = 2
-  for_each = toset(["a", "b"])
-  name     = "cloudnova-broken-dlq"
+variable "session_token" {
+  type      = string
+  ephemeral = true
+  default   = "demo-token"
 }
 
-# Error 3: count.index referenced inside a for_each resource
-resource "aws_iam_user" "svc" {
-  for_each = toset(["dev-readonly", "billing-auditor"])
-  name     = "svc-user-${count.index}"
+# Error 1: exposes a sensitive variable through a non-sensitive output
+output "db_password_leak" {
+  value = var.db_password
+}
+
+# Error 2: ephemeral output in the root module
+output "session_token_echo" {
+  value     = var.session_token
+  ephemeral = true
+}
+
+resource "aws_ssm_parameter" "leaked_arn" {
+  name  = "/cloudnova/demo/leaked-value"
+  type  = "String" # Error 3 — should be SecureString
+  value = var.db_password
 }
 ```
 
-### Error-1
-
-**File reference:** `broken.tf` — `aws_s3_bucket.env`
-
 <details>
-<summary>Reveal answer — attempt diagnosis first</summary>
+<summary>Reveal answers — attempt diagnosis first</summary>
 
-**Cause:** HCL object literals cannot have duplicate keys — `dev` is defined twice in the map. This is a syntax-level error caught during parsing, before Terraform even evaluates `for_each`.
+**Error 1 — sensitive value exposed through a non-sensitive output**
+`terraform plan` errors: "Output refers to sensitive values." Any
+output whose `value` references a `sensitive` variable or resource
+attribute must itself be marked `sensitive = true` — Terraform enforces
+this rather than leaving it to convention. Fix: add `sensitive = true`
+to `db_password_leak`.
 
-**Fix:** Each key must be unique. Rename one entry (e.g. `dev` and `dev-secondary`) or remove the duplicate.
+**Error 2 — ephemeral output in the root module**
+`terraform plan` errors: "Ephemeral outputs not allowed in root
+module." Ephemeral outputs are restricted to child modules — this
+configuration has no module structure at all, so the flag is invalid
+here regardless of what it's applied to. Fix: remove `ephemeral = true`
+(and accept the value will be in state, since it's the root module), or
+restructure so this output lives in a child module if the ephemeral
+guarantee is actually required.
 
-**Cascade:** Because this fails at parse time, `terraform validate` never reaches Error 2 or Error 3 in the same file until this is fixed — fix errors in the order they're reported.
-
-</details>
-
-### Error-2
-
-**File reference:** `broken.tf` — `aws_sqs_queue.dlq`
-
-<details>
-<summary>Reveal answer — attempt diagnosis first</summary>
-
-**Cause:** `count` and `for_each` are both set on the same resource block. Terraform rejects this because the two addressing schemes (integer index vs. arbitrary key) are mutually incompatible — it has no way to reconcile them.
-
-**Fix:** Choose one. Since the two SQS queues here have no meaningful per-instance identity beyond "queue A" and "queue B," `count = 2` with `count.index`-based naming is the better fit — remove the `for_each` line entirely.
-
-**Cascade:** Leaving both in place blocks `terraform plan` from running at all for this resource — no queues get created until this is resolved.
-
-</details>
-
-### Error-3
-
-**File reference:** `broken.tf` — `aws_iam_user.svc`
-
-<details>
-<summary>Reveal answer — attempt diagnosis first</summary>
-
-**Cause:** `count.index` is only available inside a resource block that uses `count`. This resource uses `for_each`, where the equivalent references are `each.key`/`each.value` — `count.index` is undefined in this context and Terraform reports it as a reference to a nonexistent object.
-
-**Fix:** Replace `count.index` with `each.key`: `name = "svc-user-${each.key}"` (or drop the numeric suffix entirely, since `each.key` already gives each user a unique, meaningful name).
-
-**Cascade:** None of the two IAM users are created until this reference error is resolved — same effect as Error 2, a plan-blocking validation failure rather than a partial apply.
+**Error 3 — sensitive value written to Parameter Store as plaintext**
+Not a `validate`/`plan`-time error — this applies successfully and
+silently stores `var.db_password` in plaintext in Parameter Store.
+Diagnosed by inspecting the parameter's actual type:
+`aws ssm get-parameter --name /cloudnova/demo/leaked-value --query
+"Parameter.Type"` returns `"String"`, not `"SecureString"` — a real
+security misconfiguration a `validate`/`plan` pass alone wouldn't catch.
+Fix: change `type = "String"` to `type = "SecureString"`.
 
 </details>
 
@@ -723,232 +1004,306 @@ terraform destroy -auto-approve
 rm -f terraform.tfstate terraform.tfstate.backup
 cd ../..
 ```
-Verify: `terraform state list` inside `src/break-fix/` should error with "no state file was found" or return empty — confirming no break-fix resources remain before starting the next demo.
 
 ---
 
 ## Interview Prep
 
-**Q1. When would you choose `count` over `for_each`, and when is that the wrong call?**
-`count` fits when instances are truly interchangeable and position carries no meaning — three identical log groups, for example. It's the wrong call the moment an instance has a real identity worth preserving across changes, like "the prod bucket" — because removing an item from the middle of a `count`-driven list shifts every subsequent index, and Terraform will plan to destroy and recreate every instance after the removed one, even though their actual configuration didn't change. `for_each` avoids this entirely because each instance is addressed by its own stable key, independent of the others.
+**Q1. A teammate says "I marked this output `sensitive`, so it's safe to reference from another configuration via remote state." What's the nuance?**
+`sensitive` controls display, not access. `terraform_remote_state` can still read the value — it's in state, and remote state reads state directly. If the downstream configuration re-exposes that value in one of its own outputs, Terraform will require that new output to also be marked `sensitive` — the redaction requirement propagates, but the underlying value was never inaccessible to begin with. The real access boundary is who can read the state backend at all, not the `sensitive` flag.
 
-**Q2. A teammate's PR uses `for_each = var.subnet_ids` where `subnet_ids` is `type = list(string)`. What happens, and what's your review comment?**
-It fails validation — `for_each` requires a map or a set, not a list, specifically because a set (or map) guarantees each key/value is a stable, order-independent identity, which is the property `for_each`'s per-instance addressing depends on. The review comment: wrap it as `toset(var.subnet_ids)`, and flag that if `subnet_ids` can ever contain duplicates, `toset()` will silently collapse them — worth confirming that's acceptable for this use case.
+**Q2. Why are ephemeral outputs restricted to child modules — what's actually different about a root module's outputs?**
+A root module's outputs are the final, top-level result of `apply` — there's no "downstream Terraform consumer" left to hand an ephemeral value to safely once you're at the root. A child module's outputs, by contrast, flow into the calling module, which might itself pass them into another ephemeral context (a write-only resource argument, for instance). The restriction isn't arbitrary — it reflects that ephemeral guarantees only make sense when something further down the chain can still honor them.
 
-**Q3. How do you explain the difference between `for_each` on a resource and a `dynamic` block to someone who's only seen one of the two?**
-`for_each` on a resource block creates multiple independent state entries — Terraform tracks each instance separately, and you can destroy one without touching the others. A `dynamic` block, by contrast, repeats a *nested configuration block inside a single resource* — there's still exactly one resource in state; you're just avoiding writing out N copies of an `ingress {}` block by hand. If someone says "I used `dynamic` to create three separate S3 buckets," that's actually not possible — `dynamic` can't create separate top-level resources, only repeated nested blocks within one.
+**Q3. When would you choose SSM Parameter Store over `terraform_remote_state` for sharing a value between two Terraform configurations owned by the same team?**
+If both configurations are Terraform, on the same team, and you're comfortable granting read access to the source state backend, `terraform_remote_state` is simpler — no extra resource to provision, no extra IAM permission to design beyond state-backend read access. SSM becomes the better choice the moment a non-Terraform consumer needs the value too (an application reading its config at runtime), or when you specifically don't want to grant state-backend access just to share one value — SSM's IAM permissions are scoped to that one parameter, not the entire state file.
 
-**Q4. Your CI pipeline shows a plan with `count.index` used inside a `for_each` resource, and it's failing. Walk through your diagnosis.**
-First, I'd read the exact error — Terraform will report a reference to an object that doesn't exist in that context, since `count.index` simply isn't defined inside a `for_each` block. That tells me immediately this is a mismatched meta-argument reference, not a provider or AWS-side issue. The fix is mechanical: swap `count.index` for `each.key` (or `each.value`, depending on what's actually needed), which confirms the resource was always meant to be `for_each`-driven and the reference was just never updated when it was converted.
-
-**Q5. Why does Terraform refuse to let you use `count` and `for_each` together instead of just picking one automatically?**
-Because "pick one automatically" would be a silent, implicit decision about addressing semantics — and Terraform's whole design philosophy is explicit, predictable state addressing. If it silently preferred `for_each`, someone debugging why their `count.index` references broke would have no clear signal why; failing validation immediately, with both meta-arguments visible in the error, makes the actual problem obvious at the point of authoring rather than surfacing as confusing behavior later.
+**Q4. A DB password variable is `sensitive = true`. A teammate writes an SSM parameter with `type = "String"` and `value = var.db_password`. Does `terraform plan`/`apply` catch this?**
+No — this is exactly Break-Fix Error 3. Marking a variable `sensitive` only affects Terraform's own terminal/plan output; it does not enforce anything about what resource arguments that value flows into afterward. Writing a sensitive value into a plaintext `String` parameter succeeds silently. This has to be caught by review or by inspecting the parameter's actual `Type` after the fact — `sensitive` gives you no automatic protection once the value leaves Terraform's own display layer.
 
 ---
 
 ## Key Takeaways
 
-1. **`count` addresses instances by position, `for_each` addresses them by key.** Choosing `count` for something with real per-instance identity (like an environment name) sets up the reordering-replacement trap covered fully in Demo 08 — choose based on whether position or identity is the meaningful thing here, not on which one is shorter to type.
-2. **`for_each` requires a map or a set — never a plain list.** A `list(string)` variable must go through `toset()` first; forgetting this is one of the most common `for_each` authoring errors and fails at `validate`, before any AWS call.
-3. **`count.index` only exists inside `count`-driven resources; `each.key`/`each.value` only exist inside `for_each`-driven ones.** Mixing them up — usually after converting a resource from one to the other — produces an "reference to undeclared" error, not a silent wrong value.
-4. **`count` and `for_each` can never coexist on one resource block.** Terraform rejects this at validation time specifically because the two addressing schemes are mutually incompatible — there is no "for_each wins" fallback.
-5. **Splat expressions (`resource[*].attr`) are the terse form of a `for` expression for the single common case of "one unmodified attribute from every instance."** Reach for a full `for` expression the moment you need filtering or transformation instead.
-6. **`for_each` on a resource and a `dynamic` block are not the same tool.** `for_each` creates multiple independent state entries for a whole resource; `dynamic` repeats one nested block inside a single resource, which still has exactly one state entry.
-7. **`toset()` silently deduplicates.** If your source list can contain duplicate values, confirm that's actually acceptable before relying on `toset()` to "just handle it" — it will handle it by discarding the duplicate, which may not be what you wanted.
-8. **A resource with real, stable per-instance names (environments, regions, named service accounts) is very rarely a good `count` candidate** — if you're naming instances by string in your `count.index` interpolation anyway, that's usually a sign the resource wants `for_each` instead.
+1. **`sensitive` on an output redacts default display — `-json` and
+   `-raw` both bypass it.** This is consistent with `sensitive` never
+   being encryption in the first place (true for variables in Demo 05,
+   equally true for outputs here).
+
+2. **An output is *required* to be `sensitive` if its value references
+   anything already sensitive.** Terraform enforces this — Break-Fix
+   Error 1 shows the exact failure when it's skipped.
+
+3. **Ephemeral outputs are child-module only.** A root module's
+   outputs are the final result of `apply`, with nothing downstream
+   left to honor an ephemeral guarantee.
+
+4. **`terraform_remote_state` is read-only by construction.** It reads
+   a state *file*, not the source configuration's `.tf` files or its
+   ability to `apply` — there is no write path through it at all.
+
+5. **SSM Parameter Store and remote state solve the same problem for
+   different audiences.** Remote state: Terraform-to-Terraform, same
+   team, no extra resource. SSM: cross-team or non-Terraform consumers,
+   `SecureString` for anything sensitive.
+
+6. **A `SecureString` parameter written as plain `String` isn't caught
+   by `validate` or `plan`.** It applies successfully and silently
+   stores the value in plaintext — a review-time or inspection-time
+   catch, not a Terraform-enforced one.
+
+> **Demo scope:** Primary concept: outputs as an interface — full
+> argument depth (`sensitive`, `ephemeral`, `depends_on`) and every
+> `terraform output` display variant. Supporting concepts:
+> `terraform_remote_state` as a read-only cross-configuration sharing
+> mechanism, and SSM Parameter Store (`String` vs. `SecureString`) as a
+> second, decoupled sharing pattern.
+> Estimated completion time: 40 minutes (reading + hands-on + verification).
+> Checkpoints: 3 natural stopping points (end of Part A, end of Part B,
+> end of Part C).
+
+---
+
+## Quick Commands Reference
+
+| Command | Description |
+|---|---|
+| `terraform output` | Shows all outputs; `sensitive` ones redacted |
+| `terraform output -json` | Shows all outputs as JSON, including sensitive values in plaintext |
+| `terraform output -raw NAME` | Shows one output's raw value, no quotes — for shell scripting |
+| `aws ssm get-parameter --name PATH --with-decryption` | Reads an SSM parameter, decrypting if `SecureString` |
+| `aws ssm get-parameter --query "Parameter.Type"` | Confirms whether a parameter is `String` or `SecureString` |
+| `terraform destroy` (inside `consumer/`) | Tears down the remote-state consumer configuration independently |
 
 ---
 
 ## Next Demo
 
-**Demo 08 — State Addressing and Multiplicity Migration**
-
-Building directly on this demo's `count` and `for_each` resources, Demo 08 covers:
-- The exact state-addressing mechanics behind `resource[0]` vs `resource["key"]`
-- The `count` mid-list-removal replacement trap, demonstrated live against this demo's DLQ queues
-- Migrating a resource from `count` to `for_each` without a destroy/recreate, using the `moved` block
-- Advanced splat usage and `terraform state list` key/index filtering
+**Demo 08 — Data Sources:** `data` vs. `resource`, `aws_iam_policy`,
+`aws_s3_bucket`, filtering, `count` on a data source, and a new
+`data.aws_ami` lookup — the last purely read-only demo before Demo 09
+moves into `for` expressions and collection functions in full.
 
 ---
 
 ## Appendix — Anki Cards
 
-**`07-count-for-each-anki.csv`:**
-```csv
-#deck:Terraform AWS Mastery::Phase 1 - Foundations::07-count-for-each
+**07-outputs-remote-state-anki.csv:**
+
+```
+#deck:Terraform AWS Mastery::Phase 1 - Foundations::07-outputs-remote-state
 #separator:Comma
 #columns:Front,Back,Tags
-"You need 3 identical CloudWatch log groups where none of them has a meaningful name beyond being 'one of three.' Which meta-argument do you use, and how do you build a unique name for each?","Use `count = 3`. Build the name with `count.index`, e.g. `name = ""app-log-${count.index}""` — this produces app-log-0, app-log-1, app-log-2 (zero-indexed).","demo07,count,ta-004"
-"You write `for_each = var.subnet_ids` where subnet_ids is `type = list(string)`. What happens when you run terraform validate?","It fails. `for_each` requires a map or a set, not a list. Fix: wrap it as `toset(var.subnet_ids)`.","demo07,for_each,ta-004"
-"Inside a for_each-driven resource, what are the two expressions used to reference the current instance's key and value?","each.key and each.value. On a set (via toset()), each.value is always identical to each.key since a set has no separate value component.","demo07,for_each,ta-004"
-"Inside a count-driven resource, what expression gives you the current instance's position, and is it zero- or one-indexed?","count.index — zero-indexed. The first instance is count.index == 0, not 1.","demo07,count,ta-004"
-"You write a resource block with both count = 2 and for_each = toset([""a"",""b""]). What happens?","terraform validate fails with an error that count and for_each are mutually exclusive on a single resource block — Terraform cannot reconcile integer-index addressing with key-based addressing at the same time. [needs-verification]","demo07,count,for_each,break-fix,ta-004"
-"You accidentally leave count.index in a resource that was converted to for_each. What error do you get?","A reference-to-undeclared error — count.index only exists inside count-driven resources. The fix is to replace it with each.key or each.value, whichever is appropriate.","demo07,for_each,break-fix"
-"How do you collect the ARN of every instance of a count-driven aws_sqs_queue resource into a single list, without a for expression?","A splat expression: aws_sqs_queue.dlq[*].arn — returns a list of every instance's arn attribute in index order.","demo07,splat,ta-004"
-"When would you prefer a full for expression over a splat expression for collecting resource attributes?","When you need to filter instances or transform the attribute before collecting it — splat only handles 'give me one unmodified attribute from every instance, unconditionally.'","demo07,splat"
-"On a for_each resource, does a splat expression (resource[*].attr) return the results keyed by each.key?","No — splat on a for_each resource returns values in map-iteration order with no keys attached. To keep the key, use a for expression instead: { for k, v in resource : k => v.attr }.","demo07,splat,for_each"
-"How is an individual instance of a for_each-driven aws_s3_bucket resource named env, keyed dev, addressed in Terraform code or state?","aws_s3_bucket.env[""dev""] — string key in square brackets, quoted.","demo07,for_each,state-addressing"
-"How is the second instance of a count-driven aws_sqs_queue resource named dlq addressed?","aws_sqs_queue.dlq[1] — integer index in square brackets, zero-based, so the second instance is index 1.","demo07,count,state-addressing"
-"You have a list variable with a duplicate value and convert it with toset() for a for_each resource. What happens to the duplicate?","toset() silently deduplicates — the resulting set contains only one instance of the duplicated value, so only one resource instance is created for it, not two.","demo07,for_each,toset"
-"What is the key structural difference between for_each on a resource block and a dynamic block inside a resource?","for_each on a resource creates multiple independent state entries (separate objects Terraform tracks). A dynamic block repeats a nested configuration block inside a single resource — there is still exactly one state entry.","demo07,for_each,dynamic,ta-004"
-"Why does for_each require a map or set instead of accepting a list directly, the way count accepts a plain number?","Because for_each's addressing depends on each key being a stable, order-independent identity — a list is ordered and can contain duplicates, which breaks that guarantee. A map or set enforces uniqueness and doesn't rely on position.","demo07,for_each"
-"CloudNova needs one S3 bucket per environment (dev/staging/prod), each with a meaningful, permanent name. Why is for_each the better choice here over count, even though both could technically create 3 buckets?","for_each addresses each bucket by environment name (a stable identity), so adding a 4th environment or removing one doesn't shift any other bucket's address. count addresses buckets by position — removing the middle one out of three would shift indexes and could cause Terraform to plan destroy/recreate on buckets that didn't actually change.","demo07,for_each,count,decision"
-"A resource has count = 3 and you reference aws_instance.web[2] in another resource. Is [2] the second or third instance?","The third instance — count.index and the resulting addressing are zero-based, so [0] is first, [1] is second, [2] is third.","demo07,count,state-addressing,ta-004"
-"What's the fix for a for_each map literal that has the same key defined twice, e.g. { dev = ""a"", dev = ""b"" }?","This is an HCL syntax error, not a for_each-specific one — object literals cannot have duplicate keys. Rename one of the keys so both are unique.","demo07,for_each,break-fix"
-"True or false: a splat expression can be used on a resource that has neither count nor for_each set.","False — without count or for_each, a resource has exactly one instance (no index or key), and splat syntax (resource[*].attr) doesn't apply; you'd just reference resource.attr directly.","demo07,splat"
+"An output is marked sensitive = true. Does terraform output -json still redact it?","No. -json (and -raw) show the actual plaintext value regardless of the sensitive flag. Only the default terraform output display (and terraform output NAME without -json/-raw) redacts to (sensitive value). sensitive controls display, not access.","demo07,outputs,sensitive,ta004"
+"An output's value references a variable marked sensitive = true, but the output itself has no sensitive argument. What happens?","terraform plan errors: 'Output refers to sensitive values.' Terraform requires the output itself to be marked sensitive = true if its value references anything already sensitive — this is enforced, not just a convention.","demo07,outputs,sensitive,break-fix"
+"Can an ephemeral = true output be declared in a root module?","No. Ephemeral outputs are restricted to child modules only. Declaring one in the root module errors: 'Ephemeral outputs not allowed in root module.' A root module's outputs are the final result of apply, with nothing downstream to honor an ephemeral guarantee.","demo07,outputs,ephemeral,ta004"
+"When is depends_on actually needed on an output block?","Only when the value expression doesn't already imply the dependency you need. Normally referencing a resource attribute (e.g. aws_iam_role.deploy.arn) creates an implicit dependency automatically — depends_on is for the rarer case where the value doesn't reference what it logically depends on.","demo07,outputs,depends_on"
+"What access does data.terraform_remote_state grant to the source configuration's resources?","None beyond read access to that configuration's state file. It's read-only by construction — there is no path through terraform_remote_state to modify the source configuration's resources or even access its .tf files.","demo07,remote-state,ta004"
+"A sensitive output's value is read via terraform_remote_state in a second configuration. Is it still protected there?","Only if the second configuration also marks its own output sensitive when re-exposing that value — the redaction requirement propagates through remote state the same way it propagates through any other reference. The underlying value itself was always readable by anyone with state-backend read access.","demo07,remote-state,sensitive"
+"What is the difference between an SSM aws_ssm_parameter type of String vs SecureString?","String stores the value in plaintext in Parameter Store. SecureString encrypts it with a KMS key, decrypted only on read by callers with kms:Decrypt permission. Any value that was sensitive upstream should use SecureString.","demo07,ssm,ta004"
+"You read a SecureString SSM parameter with aws ssm get-parameter but forget --with-decryption. What do you get back?","The KMS-encrypted ciphertext, not the plaintext value. --with-decryption is required to get the actual decrypted value back for a SecureString parameter.","demo07,ssm,break-fix"
+"A sensitive Terraform variable is written into an aws_ssm_parameter with type = String. Does terraform plan or apply catch this?","No — this succeeds silently. sensitive only affects Terraform's own terminal/plan display; it does not enforce anything about what resource arguments that value flows into afterward. This has to be caught by review or by inspecting the parameter's actual Type after the fact.","demo07,ssm,sensitive,break-fix"
+"When would you choose SSM Parameter Store over terraform_remote_state for sharing a value between two Terraform configs on the same team?","When a non-Terraform consumer also needs the value (an application reading config at runtime), or when you don't want to grant state-backend read access just to share one value. Remote state is simpler when both sides are Terraform and state-backend read access is acceptable.","demo07,ssm,remote-state,decision"
+"List the four terraform output display variants and what each is for.","terraform output (all, sensitive redacted) — for humans. terraform output NAME (one, sensitive redacted) — for humans, one value. terraform output -json (all, plaintext even if sensitive) — for scripted JSON parsing. terraform output -raw NAME (one, no quotes, plaintext even if sensitive) — for shell variable capture.","demo07,outputs,cli,ta004"
 ```
 
 ---
 
 ## Appendix — Quiz
 
-**`07-count-for-each-quiz.md`:**
-````markdown
-# Demo 07 Quiz — Count, For-Each, and the Multiplicity Decision
+**07-outputs-remote-state-quiz.md:**
+
+```markdown
+# Quiz — Demo 07: Outputs, Sensitivity, and Remote State
+
+> One correct answer per question unless stated otherwise.
+> Target: 80% or above before moving to Demo 08.
+> TA-004 exam style.
 
 ---
 
-**Q1.** You need 4 identical CloudWatch log groups where no instance has meaning beyond "one of four." What's the best construct?
+**Q1.** An output is marked `sensitive = true`. Which command shows its
+actual plaintext value?
 
-- A) `for_each` over a set of 4 arbitrary strings
-- B) `count = 4`
-- C) Four separate resource blocks
-- D) `dynamic` block
+A. `terraform output`
+B. `terraform output NAME`
+C. `terraform output -json`
+D. None — sensitive values are never displayed by any command
 
 <details>
 <summary>Answer</summary>
 
-**B** — `count` is designed exactly for this: N interchangeable instances with no meaningful per-instance identity. `for_each` (A) works too but adds unnecessary indirection (you'd have to invent 4 arbitrary keys). Four separate blocks (C) is the repetition this feature exists to eliminate. `dynamic` (D) repeats a nested block within one resource, not whole resources.
+**C.** `-json` (and `-raw`) bypass sensitive redaction and show the
+plaintext value. **A** and **B** are wrong — both show `(sensitive
+value)` for a sensitive output. **D** is wrong — `-json`/`-raw` do show
+it in plaintext; redaction is display-only, not universal.
 
 </details>
 
 ---
 
-**Q2.** A resource block has `for_each = var.regions` where `regions` is `type = list(string)`. What happens on `terraform validate`?
+**Q2.** An output's `value` references a `sensitive = true` variable,
+but the output itself has no `sensitive` argument. What happens?
 
-- A) It works — `for_each` accepts lists directly
-- B) It fails — `for_each` requires a map or a set
-- C) It works but silently treats the list as a set
-- D) It works only if the list has no duplicates
+A. It works fine — sensitivity only applies to variables, not outputs
+B. `terraform plan` errors — the output must also be marked `sensitive`
+C. The output is silently redacted without needing the flag
+D. Terraform prompts interactively to confirm
 
 <details>
 <summary>Answer</summary>
 
-**B** — `for_each` requires a map or a set, never a plain list, regardless of whether the list has duplicates. Fix: wrap it in `toset()`.
+**B.** Terraform enforces that an output referencing a sensitive value
+must itself be marked `sensitive = true` — this is a `plan`-time error,
+not a suggestion. **A** is wrong — sensitivity requirements propagate
+from variables/resources into outputs that reference them. **C** is
+wrong — there's no automatic silent redaction; the flag is required
+explicitly. **D** is wrong — Terraform never resolves this
+interactively; it's a hard error.
 
 </details>
 
 ---
 
-**Q3.** Inside a `for_each`-driven resource, you write `name = "svc-${count.index}"`. What happens?
+**Q3.** Can an `ephemeral = true` output be declared in a root module?
 
-- A) It works, using the map's iteration position
-- B) It fails — `count.index` is undefined in a `for_each` context
-- C) It works, treating `count.index` as `each.key`
-- D) It silently defaults to 0
+A. Yes, identically to a child module
+B. No — ephemeral outputs are restricted to child modules
+C. Yes, but only if `sensitive = true` is also set
+D. Yes, but only for outputs referencing data sources
 
 <details>
 <summary>Answer</summary>
 
-**B** — `count.index` only exists inside `count`-driven resources. In a `for_each` resource, the equivalent references are `each.key`/`each.value`. Terraform reports this as a reference to an undeclared object; it does not fall back to any of A/C/D.
+**B.** Ephemeral outputs are restricted to child modules — a root
+module's outputs are the final result of `apply`, with nothing
+downstream to honor an ephemeral guarantee. **A** is wrong — this is
+exactly the restriction being tested. **C** and **D** are wrong —
+there's no combination of other arguments that makes an ephemeral
+root-module output valid; the restriction is absolute.
 
 </details>
 
 ---
 
-**Q4.** What's the correct way to reference the third instance of `resource "aws_sqs_queue" "dlq"` created with `count = 5`?
+**Q4.** What access does `data.terraform_remote_state` grant to the
+source configuration it reads from?
 
-- A) `aws_sqs_queue.dlq[3]`
-- B) `aws_sqs_queue.dlq[2]`
-- C) `aws_sqs_queue.dlq["3"]`
-- D) `aws_sqs_queue.dlq.2`
+A. Full read/write access to the source configuration's resources
+B. Read-only access to that configuration's outputs, via its state file
+C. The ability to trigger `terraform apply` on the source configuration
+D. Access to the source configuration's `.tf` files directly
 
 <details>
 <summary>Answer</summary>
 
-**B** — indexing is zero-based, so the third instance is index 2. A is a common off-by-one error treating it as one-based. C uses `for_each`-style string-key syntax, which doesn't apply to `count`. D isn't valid Terraform syntax for either mechanism.
+**B.** It reads the source configuration's state file and exposes its
+outputs — read-only, by construction. **A** is wrong — there is no
+write path through remote state at all. **C** is wrong — remote state
+reads a file; it never invokes Terraform against the source
+configuration. **D** is wrong — it never touches `.tf` files, only the
+state file's recorded outputs.
 
 </details>
 
 ---
 
-**Q5.** A resource block is written with both `count = 2` and `for_each = toset(["a","b"])`. What is the result?
+**Q5.** You read a `SecureString` SSM parameter with `aws ssm
+get-parameter` but forget `--with-decryption`. What do you get back?
 
-- A) Terraform creates 2 instances, using `for_each`'s values as names
-- B) Terraform creates 4 instances (2 × 2)
-- C) `terraform validate` fails — the two meta-arguments are mutually exclusive
-- D) `for_each` is silently ignored and `count` wins
+A. The plaintext value, same as always
+B. An error — the command refuses to run without the flag
+C. The KMS-encrypted ciphertext, not the plaintext value
+D. An empty string
 
 <details>
 <summary>Answer</summary>
 
-**C** — Terraform rejects this configuration at validation time. There is no merge or precedence behavior (ruling out A, B, D) — the two addressing schemes are incompatible and Terraform will not guess which one you meant.
+**C.** Without `--with-decryption`, `get-parameter` returns the raw
+encrypted value for a `SecureString` parameter. **A** is wrong — that's
+only true for `String` type parameters, or `SecureString` *with* the
+flag. **B** is wrong — the command runs successfully; it just returns
+ciphertext, not an error. **D** is wrong — a value is returned, just not
+a usable plaintext one.
 
 </details>
 
 ---
 
-**Q6.** What does `aws_s3_bucket.env[*].arn` return, if `env` is a `for_each`-driven resource over a 3-entry map?
+**Q6.** A `sensitive = true` Terraform variable is written into an
+`aws_ssm_parameter` with `type = "String"`. Does `terraform plan` or
+`apply` catch this as an error?
 
-- A) A map of key → arn
-- B) A list of the 3 ARNs, in map-iteration order, with no keys attached
-- C) A single ARN — the first instance only
-- D) An error — splat doesn't work on `for_each` resources
+A. Yes, `terraform plan` refuses to proceed
+B. Yes, but only `terraform apply` catches it
+C. No — it applies successfully and stores the value in plaintext
+D. No — Terraform automatically upgrades it to `SecureString`
 
 <details>
 <summary>Answer</summary>
 
-**B** — splat on a `for_each` resource still returns a list, not a map, and does not carry the keys along. If you need the keys, use a `for` expression instead: `{ for k, v in aws_s3_bucket.env : k => v.arn }`.
+**C.** This succeeds silently. `sensitive` only affects Terraform's own
+terminal/plan display — it enforces nothing about what resource
+arguments that value subsequently flows into. **A** and **B** are wrong
+— neither `plan` nor `apply` validates this. **D** is wrong — Terraform
+never silently changes a resource argument's value; `type` stays
+exactly as written.
 
 </details>
 
 ---
 
-**Q7.** Your input list variable has a duplicate value: `["dev-readonly", "dev-readonly"]`. You use `toset()` for a `for_each` resource. How many instances get created?
+**Q7.** When would SSM Parameter Store be the better choice over
+`terraform_remote_state` for sharing a value between two Terraform
+configurations on the same team?
 
-- A) 2 — one per list element
-- B) 1 — `toset()` deduplicates
-- C) 0 — duplicates cause a validation error
-- D) It depends on provider behavior
+A. Never — remote state is always superior for Terraform-to-Terraform sharing
+B. When a non-Terraform consumer also needs the value, or you don't want to grant state-backend read access
+C. Only when the value is a number, not a string
+D. Only when both configurations use the same S3 backend bucket
 
 <details>
 <summary>Answer</summary>
 
-**B** — `toset()` converts the list to a set, and sets cannot contain duplicate values, so the duplicate collapses to one entry and exactly one resource instance is created for it.
+**B.** SSM's IAM permissions are scoped to one parameter, useful when
+you want to avoid granting broader state-backend access, or when a
+non-Terraform consumer (an application at runtime) needs the value
+too. **A** is wrong — SSM has genuine advantages in specific scenarios.
+**C** is wrong — the value's type has no bearing on this decision. **D**
+is wrong — using the same bucket has nothing to do with which sharing
+pattern is more appropriate.
 
 </details>
 
 ---
 
-**Q8.** What is the key structural difference between using `for_each` on a resource block versus using a `dynamic` block inside a resource?
+**Q8.** What is `depends_on` on an output block actually for?
 
-- A) There is no difference — both create multiple resource instances
-- B) `for_each` on a resource creates multiple independent state entries; `dynamic` repeats a nested block within a single resource that remains one state entry
-- C) `dynamic` blocks can only be used with `count`, never `for_each`
-- D) `for_each` can only be used inside `dynamic` blocks
+A. It's required on every output that references a resource
+B. It's for the rare case where the `value` expression doesn't already imply a needed dependency
+C. It marks the output as sensitive
+D. It controls the order outputs are displayed in `terraform output`
 
 <details>
 <summary>Answer</summary>
 
-**B** — this is the core distinction covered in Concepts. A `for_each`-driven resource has as many independent state entries as there are keys; a `dynamic` block just repeats configuration inside one resource, which still has exactly one state entry.
+**B.** Most outputs never need `depends_on` — referencing a resource
+attribute in `value` already creates an implicit dependency. It's only
+needed when the value doesn't reference what it logically depends on.
+**A** is wrong — the vast majority of outputs work fine without it. **C**
+is wrong — that's the unrelated `sensitive` argument. **D** is wrong —
+display order isn't something `depends_on` affects at all.
 
 </details>
 
 ---
 
-**Q9.** CloudNova needs a bucket per environment where the environment name itself is meaningful and must be stable if environments are added or removed later. Which is the better choice and why?
+Score guide:
 
-- A) `count`, because it's simpler syntax
-- B) `for_each`, because each instance's identity (the environment name) doesn't depend on the position of other instances
-- C) Either works identically for this case
-- D) Neither — this requires a separate resource block per environment
-
-<details>
-<summary>Answer</summary>
-
-**B** — this is exactly the scenario `for_each` is designed for: instances with real, stable identity. `count` (A) would work mechanically but risks the reordering-replacement trap the moment a middle environment is removed — full mechanics of that trap are covered in Demo 08.
-
-</details>
-
----
-````
+| Score | Action |
+|---|---|
+| 8/8 | Import Anki cards, move to Demo 08 |
+| 7/8 | Review the wrong answer, then proceed |
+| 6/8 | Re-read the relevant section, retry those questions |
+| Below 6/8 | Re-read the full demo and redo the walkthrough before proceeding |
+```
