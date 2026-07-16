@@ -1199,8 +1199,10 @@ Expected output:
 Plan: 1 to import, 0 to add, 0 to change, 0 to destroy.
 ```
 
-> **Why `0 to change`  alongside `1 to import`:** 
-> No change required beacause in Step 3 — the `tags_all` reconciliation is already done
+> **Why `0 to change` alongside `1 to import`:** No additional change is
+> required — the `tags_all` reconciliation already happened during the
+> CLI import in Step 3, so this second import (via the block) has
+> nothing left to reconcile.
 
 
 ```bash
@@ -1913,53 +1915,99 @@ rm -f terraform.tfstate
    attributes in plaintext, and even without secrets, it reveals the
    complete shape of your infrastructure; Git also lacks the locking
    that remote backends provide
-4. ✅ `terraform import` (CLI) brings an existing resource into state
-   immediately, with no preview; the `import` block (Terraform 1.5+) is
-   reviewable in `plan` first and is the modern preferred approach
-5. ✅ A successful import is not complete until `plan` shows zero changes
-   — a `tags_all` pending change after import is expected when
-   `default_tags` are configured; close it with `apply` before
-   considering the import done
-6. ✅ `terraform state mv` renames/moves a resource's address in state
+4. ✅ Imported a manually-created resource both via CLI `terraform
+   import` (immediate, no preview) and via an `import {}` block
+   (reviewable in `plan` first, the modern preferred approach) — and
+   confirmed the import wasn't complete until the expected `tags_all`
+   pending change (from `default_tags`) was closed with `apply` and
+   `plan` showed zero changes
+5. ✅ `terraform state mv` renames/moves a resource's address in state
    without touching the real infrastructure — but the `import {}` block
    must be removed first if still present, or the rename causes an error
-7. ✅ `terraform state rm` removes a resource from state without
+6. ✅ `terraform state rm` removes a resource from state without
    destroying it in AWS — the resource keeps running, untouched, but
    Terraform forgets it exists; re-import (not `apply`) is the correct
    recovery
-8. ✅ State recovery from S3 versioning restores Terraform's *belief*
+7. ✅ State recovery from S3 versioning restores Terraform's *belief*
    about infrastructure, not infrastructure itself — always follow a
    restore with `plan -refresh-only` to check whether reality agrees
-9. ✅ `terraform force-unlock` should only be used after confirming no
+8. ✅ `terraform force-unlock` should only be used after confirming no
    apply is genuinely still running — it doesn't validate this for you
+
 
 ---
 
-## Cert Tips — TA-004 Objectives Covered
+## Cert Tips
 
-This demo covers **TA-004 Objective on state management** in depth:
+### Exam Objective Mapping
 
-- `terraform import` and `import` blocks achieve the same end state —
-  know that only the `import` block is previewable in `plan` before it
-  happens
-- **`terraform state rm` does NOT delete the AWS resource** — this is
-  one of the most frequently tested facts in this objective area
-- `terraform state mv` only edits state, never `.tf` files — you must
-  manually keep the `.tf` resource block's name in sync; also remove any
-  `import {}` block before renaming or it causes a configuration error
-- State file top-level fields: `version` (format schema, not CLI
-  version), `terraform_version` (CLI version), `serial` (conflict
-  detection counter), `lineage` (UUID permanent identity) — know what
-  each is used for
-- A `tags_all` pending change immediately after import is expected when
-  `default_tags` is configured — close it with `apply`, not a re-import
-- `terraform state push` **overwrites** remote state — it does not merge
-  with what's currently there
-- `terraform force-unlock` requires the lock ID shown in the error
-  message, and does not itself verify whether unlocking is safe
-- `terraform show -json` outputs a stable, documented schema; reading
-  `.tfstate` directly parses an internal format that can change between
-  versions — prefer `show -json` for any scripting or CI use
+| Demo concept / command | Exam objective | Notes |
+|---|---|---|
+| `terraform.tfstate` top-level fields (`version`, `serial`, `lineage`) | TA-004 Obj — State structure | `version` = format schema, NOT the CLI version — frequently confused |
+| `terraform show` / `show -json` / `state show` | TA-004 Obj — State inspection | Know which is scriptable (`show -json`) vs. human-only |
+| `terraform import` (CLI) vs. `import {}` block | TA-004 Obj — Bringing resources under management | Only the block is previewable in `plan` before it happens |
+| `terraform state mv` | TA-004 Obj — State manipulation | Edits state only — `.tf` files must be edited separately and kept in sync |
+| `terraform state rm` | TA-004 Obj — State manipulation | Does NOT delete the AWS resource — one of the most tested facts in this objective |
+| `terraform state push` | TA-004 Obj — State recovery | Overwrites, does not merge |
+| `terraform force-unlock` | TA-004 Obj — State recovery | Does not itself verify safety — a manual confirmation step is required |
+
+### Common Exam Traps
+
+| Scenario | What the task actually requires | Common wrong approach |
+|---|---|---|
+| "Does `terraform state rm` delete the resource in AWS?" | No — only removes it from state; the resource keeps running untouched | Assuming `state rm` is equivalent to `destroy` |
+| "A resource is renamed in `.tf`. What does `plan` show without `state mv`?" | Destroy the old address, create the new one | Assuming Terraform automatically detects renames |
+| "After `state rm`, what does the next `plan` propose if the `.tf` block still exists?" | To create the resource — state no longer knows it exists | Assuming Terraform will notice the resource still exists in AWS and skip re-creating it |
+| "Does `terraform state push` merge with the current remote state?" | No — it's a full overwrite; anything written after the pushed version's serial is lost from Terraform's record | Assuming `state push` is a safe, additive operation |
+| "Does `force-unlock` verify an apply isn't still running?" | No — it simply removes the lock file with no safety check | Assuming Terraform blocks `force-unlock` if a real apply is in progress |
+| "Is `version: 4` in the state file the Terraform CLI version?" | No — it's the state file's own format/schema version; the CLI version is the separate `terraform_version` field | Confusing the two version fields |
+
+### Exam Task — Write a complete configuration
+
+**Task:** Write a Terraform configuration that imports an existing S3 bucket using a declarative `import {}` block, with a matching resource block.
+
+**Block types required:** `terraform`, `provider`, `import`, `resource`
+
+**Official documentation:**
+- [`import` blocks](https://developer.hashicorp.com/terraform/language/import)
+- [`aws_s3_bucket` resource — Import section](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket#import)
+
+**What to practise:**
+1. Open the `import` block documentation — check the exact syntax for `to` and `id`
+2. Write the configuration from scratch without looking at this demo's `src/` files
+3. Validate: `terraform init && terraform validate`
+
+<details>
+<summary>Reference solution (open only after attempting)</summary>
+
+```hcl
+terraform {
+  required_version = "~> 1.15.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 6.47.0" }
+  }
+}
+
+provider "aws" {
+  region  = "us-east-2"
+  profile = "default"
+}
+
+import {
+  to = aws_s3_bucket.existing
+  id = "cloudnova-exam-task-bucket"
+}
+
+resource "aws_s3_bucket" "existing" {
+  bucket = "cloudnova-exam-task-bucket"
+}
+```
+
+**Arguments you must know without looking up:**
+- `import` block's `to` — a resource address reference, not a string; `id` — a string, format is resource-type-specific (bucket name for S3)
+- After the import `apply` completes, the `import {}` block should be removed — it has no ongoing effect and is only needed for the one apply that performs the import
+
+</details>
 
 ---
 
@@ -2194,23 +2242,25 @@ and direct module outputs for sharing values across configurations.
 "What is the difference between state's serial and lineage fields?","serial is an integer counter incremented by the backend on every write (every apply, import, state mv, state push) — used to detect conflicting writes. lineage is a UUID generated once when state is first created and never changed — used to detect if Terraform has been pointed at a completely different project's state file by mistake (identity check, not ordering).","demo04,state,structure"
 "What is a UUID, and why does Terraform use one for lineage?","A UUID (Universally Unique Identifier) is a general computing standard (RFC 4122) — not Terraform-specific. It is a 128-bit value formatted as 32 hex characters in five groups (e.g. e23c8740-3c03-8d66-59d1-4856064c38a4). The probability of collision is ~1 in 10^36. Terraform generates one UUID at state creation time and records it as 'lineage' — the permanent identity marker of that state file, used to detect accidental cross-project state confusion.","demo04,state,uuid,lineage"
 "What are the three state inspection commands and when do you use each?","terraform show: all resources, human-readable (quick inspection). terraform state show <address>: one specific resource, human-readable (debugging one resource). terraform show -json: all resources, stable documented JSON schema (scripting and CI). Use show -json for any automated tooling — never parse .tfstate directly, as its raw format is an internal implementation detail that can change between Terraform versions.","demo04,state,show-json,ta004"
-"What is the difference between terraform show -json output and terraform.tfstate?","terraform.tfstate is the raw storage format the backend writes — its exact JSON shape is an internal implementation detail that can change between Terraform versions. terraform show -json outputs a documented, stable JSON schema (see terraform.io/docs/internals/json-format) intended for external tooling. show -json also adds a 'format_version' field (e.g. '1.0') not present in .tfstate — this is the schema version of the show -json output itself.","demo04,state,show-json"
+"What is the difference between terraform show -json output and terraform.tfstate?","terraform.tfstate is the raw storage format the backend writes — its exact JSON shape is an internal implementation detail that can change between Terraform versions. terraform show -json outputs a documented, stable JSON schema (see terraform.io/docs/internals/json-format) intended for external tooling. show -json also adds a 'format_version' field (e.g. '1.0') not present in .tfstate — this is the schema version of the show -json output itself.","demo04,state,show-json,live-verified"
 "Why must terraform.tfstate never be committed to Git, even in a private repo?","Three reasons: (1) State can contain sensitive attributes in plaintext — resource arguments like database passwords appear in cleartext. (2) Git lacks locking — two engineers can apply simultaneously and corrupt state, the exact problem S3 backend with use_lockfile solves. (3) Git history is effectively permanent — even after a file is removed, sensitive values are recoverable from history.","demo04,state,security"
-"What does terraform import actually do — does it create anything in AWS?","No. terraform import only adds an existing AWS resource to Terraform's state, mapped to a resource address you specify. It creates nothing in AWS and does not generate .tf code for you — you must already have a resource block whose arguments will eventually need to match the real resource.","demo04,import,state"
-"After a successful terraform import, terraform plan shows a tags_all pending change. What causes this and how do you resolve it?","The imported resource was created before default_tags were configured. Terraform's import reads the bucket's current state (no tags), but default_tags specifies that every resource should have the common tags. tags_all is where the provider reconciles default_tags onto the resource. This is expected, correct behavior — resolve it by running terraform apply. Only after that apply does plan show zero changes.","demo04,import,tags-all,fact6"
-"What is the key difference between CLI terraform import and an import {} block?","CLI import executes immediately with no preview — you see the result, not a plan. An import {} block is declarative — it shows up in terraform plan as 'will be imported' before anything happens, and lives in version control as a repeatable, reviewable action. import {} (Terraform 1.5+) is the modern preferred approach.","demo04,import,import-block"
-"After an import {} block successfully imports a resource, should it stay in the .tf file?","No — remove it after the apply completes. It has no ongoing effect once the import is complete. Leaving it in is harmless, but removing it keeps the configuration clean. Importantly: remove it BEFORE doing any terraform state mv rename, or Terraform will error with 'Configuration for import target does not exist' because the block still references the old resource label.","demo04,import-block"
-"You rename a resource in .tf from aws_s3_bucket.legacy to aws_s3_bucket.uploads. What does terraform plan show, and how do you fix it?","Plan: 1 to add, 0 to change, 1 to destroy — Terraform interprets the rename as delete the old resource and create a new one. Fix: run 'terraform state mv aws_s3_bucket.legacy aws_s3_bucket.uploads' to update state's record of the address without touching AWS. After state mv, plan shows no changes. You must also update ALL references in ALL .tf files (not just the resource block) before running state mv.","demo04,state-mv,rename"
-"What must you do before running terraform state mv to rename a resource — and what error occurs if you skip it?","Remove any import {} block that still references the old resource label. If the block is still present when you rename the resource block and run plan, Terraform errors: 'Error: Configuration for import target does not exist — the configuration for the given import target aws_s3_bucket.legacy does not exist.' Remove the block first, then rename, then state mv.","demo04,state-mv,import-block,fact7"
-"Does terraform state rm delete the resource in AWS?","No — this is the single most commonly misunderstood fact about this command and a frequent exam trap. The resource keeps running in AWS, completely untouched. Only Terraform's state record of it is removed; Terraform simply forgets the resource exists.","demo04,state-rm,ta004"
-"After terraform state rm aws_s3_bucket.uploads, the .tf block still exists. What does the next plan propose, and what is the correct recovery?","Plan proposes to CREATE the resource (Terraform no longer knows it exists). Do NOT run apply — for S3, CreateBucket would fail with BucketAlreadyExists (safe by accident due to S3's uniqueness constraint). For other resource types without a uniqueness constraint, apply could create a genuine duplicate. Correct recovery: run terraform import aws_s3_bucket.uploads <bucket-name>, then terraform apply to close the tags_all gap.","demo04,state-rm,risk,recovery"
-"What does terraform state push actually do — does it merge with the current remote state?","It OVERWRITES the current remote state with the contents of the local file being pushed. It does not merge. Any state changes recorded after the version being pushed are lost from Terraform's record (real AWS resources are unaffected — only Terraform's belief about them changes). Always follow with terraform plan -refresh-only to verify the restored state matches reality.","demo04,state-push,recovery"
+"What does terraform import actually do — does it create anything in AWS?","No. terraform import only adds an existing AWS resource to Terraform's state, mapped to a resource address you specify. It creates nothing in AWS and does not generate .tf code for you — you must already have a resource block whose arguments will eventually need to match the real resource.","demo04,import,state,live-verified"
+"After a successful terraform import, terraform plan shows a tags_all pending change. What causes this and how do you resolve it?","The imported resource was created before default_tags were configured. Terraform's import reads the bucket's current state (no tags), but default_tags specifies that every resource should have the common tags. tags_all is where the provider reconciles default_tags onto the resource. This is expected, correct behavior — resolve it by running terraform apply. Only after that apply does plan show zero changes.","demo04,import,tags-all,live-verified"
+"What is the key difference between CLI terraform import and an import {} block?","CLI import executes immediately with no preview — you see the result, not a plan. An import {} block is declarative — it shows up in terraform plan as 'will be imported' before anything happens, and lives in version control as a repeatable, reviewable action. import {} (Terraform 1.5+) is the modern preferred approach.","demo04,import,import-block,live-verified"
+"After an import {} block successfully imports a resource, should it stay in the .tf file?","No — remove it after the apply completes. It has no ongoing effect once the import is complete. Leaving it in is harmless, but removing it keeps the configuration clean. Importantly: remove it BEFORE doing any terraform state mv rename, or Terraform will error with 'Configuration for import target does not exist' because the block still references the old resource label.","demo04,import-block,live-verified"
+"You rename a resource in .tf from aws_s3_bucket.legacy to aws_s3_bucket.uploads. What does terraform plan show, and how do you fix it?","Plan: 1 to add, 0 to change, 1 to destroy — Terraform interprets the rename as delete the old resource and create a new one. Fix: run 'terraform state mv aws_s3_bucket.legacy aws_s3_bucket.uploads' to update state's record of the address without touching AWS. After state mv, plan shows no changes. You must also update ALL references in ALL .tf files (not just the resource block) before running state mv.","demo04,state-mv,rename,live-verified"
+"What must you do before running terraform state mv to rename a resource — and what error occurs if you skip it?","Remove any import {} block that still references the old resource label. If the block is still present when you rename the resource block and run plan, Terraform errors: 'Error: Configuration for import target does not exist — the configuration for the given import target aws_s3_bucket.legacy does not exist.' Remove the block first, then rename, then state mv.","demo04,state-mv,import-block,live-verified"
+"Does terraform state rm delete the resource in AWS?","No — this is the single most commonly misunderstood fact about this command and a frequent exam trap. The resource keeps running in AWS, completely untouched. Only Terraform's state record of it is removed; Terraform simply forgets the resource exists.","demo04,state-rm,ta004,live-verified"
+"After terraform state rm aws_s3_bucket.uploads, the .tf block still exists. What does the next plan propose, and what is the correct recovery?","Plan proposes to CREATE the resource (Terraform no longer knows it exists). Do NOT run apply — for S3, CreateBucket would fail with BucketAlreadyExists (safe by accident due to S3's uniqueness constraint). For other resource types without a uniqueness constraint, apply could create a genuine duplicate. Correct recovery: run terraform import aws_s3_bucket.uploads <bucket-name>, then terraform apply to close the tags_all gap.","demo04,state-rm,risk,recovery,live-verified"
+"What does terraform state push actually do — does it merge with the current remote state?","It OVERWRITES the current remote state with the contents of the local file being pushed. It does not merge. Any state changes recorded after the version being pushed are lost from Terraform's record (real AWS resources are unaffected — only Terraform's belief about them changes). Always follow with terraform plan -refresh-only to verify the restored state matches reality.","demo04,state-push,recovery,live-verified"
 "What AWS feature, set up in Demo 01, makes restoring a previous state version possible?","S3 bucket versioning on the state bucket. Every terraform apply creates a new version of the state object. A previous version can be downloaded from the Console's 'Show versions' view and restored via terraform state push.","demo04,state,versioning,recovery"
-"Does terraform force-unlock verify whether it's safe to unlock before removing the lock?","No. force-unlock simply removes the lock file — it does not check whether an apply is genuinely still running. If a real apply is in progress when you force-unlock, a second apply can start concurrently, causing the exact state corruption locking exists to prevent. Always check the lock's Who field and confirm with that person or CI system first.","demo04,force-unlock,ta004"
-"What information does the Lock Info block in an 'Error acquiring the state lock' message include?","ID (the lock ID — required for force-unlock), Path (state file location in the backend), Operation (e.g. OperationTypeApply), Who (username@hostname that acquired the lock — use this to confirm with the owner before unlocking), Version (Terraform CLI version), Created (timestamp).","demo04,force-unlock,lock-info"
+"Does terraform force-unlock verify whether it's safe to unlock before removing the lock?","No. force-unlock simply removes the lock file — it does not check whether an apply is genuinely still running. If a real apply is in progress when you force-unlock, a second apply can start concurrently, causing the exact state corruption locking exists to prevent. Always check the lock's Who field and confirm with that person or CI system first.","demo04,force-unlock,ta004,live-verified"
+"What information does the Lock Info block in an 'Error acquiring the state lock' message include?","ID (the lock ID — required for force-unlock), Path (state file location in the backend), Operation (e.g. OperationTypeApply), Who (username@hostname that acquired the lock — use this to confirm with the owner before unlocking), Version (Terraform CLI version), Created (timestamp).","demo04,force-unlock,lock-info,live-verified"
 "What is the mode field in a state file's resources array, and what are the two valid values?","'managed' for normal resource blocks — resources Terraform creates, updates, and destroys. 'data' for data sources — read-only lookups of existing infrastructure that Terraform does not create or manage the lifecycle of, but still records in state for reference during plan.","demo04,state,data-sources"
 "In a state file's resources array, what does the 'dependencies' field inside an instance record?","Other resource addresses this specific resource instance depends on — used by Terraform to reconstruct the dependency graph without re-parsing all .tf files from scratch. This is the same graph terraform graph visualizes.","demo04,state,dependencies"
 ```
+
+---
 
 ## Appendix — Quiz
 
@@ -2227,11 +2277,11 @@ and direct module outputs for sharing values across configurations.
 
 **Q1.** What does `terraform import aws_s3_bucket.uploads my-bucket` actually do?
 
-A. Creates a new S3 bucket named `my-bucket` and tracks it in state
-B. Adds the existing bucket `my-bucket` to Terraform's state, mapped
-   to the address `aws_s3_bucket.uploads` — creates nothing in AWS
-C. Generates a `.tf` resource block matching the bucket's current configuration
-D. Copies the bucket's configuration into a new Terraform workspace
+- A) Creates a new S3 bucket named `my-bucket` and tracks it in state
+- B) Adds the existing bucket `my-bucket` to Terraform's state, mapped
+     to the address `aws_s3_bucket.uploads` — creates nothing in AWS
+- C) Generates a `.tf` resource block matching the bucket's current configuration
+- D) Copies the bucket's configuration into a new Terraform workspace
 
 <details>
 <summary>Answer</summary>
@@ -2247,20 +2297,19 @@ different reasons). It also has nothing to do with workspaces (D).
 **Q2.** After a successful `terraform import`, `terraform plan` shows a
 `tags_all` pending change. What does this indicate, and what should you do?
 
-A. The import failed silently — re-run import
-B. The `.tf` block is incomplete — add more arguments until plan is clean
-C. This is expected when `default_tags` are configured — run `terraform apply` to close the gap, then confirm plan shows zero changes
-D. State is corrupted — restore from S3 versioning
+- A) The import failed silently — re-run import
+- B) The `.tf` block is incomplete — add more arguments until plan is clean
+- C) This is expected when `default_tags` are configured — run `terraform apply` to close the gap, then confirm plan shows zero changes
+- D) State is corrupted — restore from S3 versioning
 
 <details>
 <summary>Answer</summary>
 
 **C.** A `tags_all` change after import is expected behavior when
-`default_tags` are configured in the provider block. The import reads
-the resource's current state (no tags), but `default_tags` specifies
-that all resources should have the common tags. Running `apply` closes
-this gap. Only after that apply does `plan` show zero changes and the
-import is truly complete.
+`default_tags` are configured. The import reads the resource's current
+state (no tags), but `default_tags` specifies that all resources should
+have the common tags. Running `apply` closes this gap. Only after that
+apply does `plan` show zero changes and the import is truly complete.
 
 </details>
 
@@ -2269,12 +2318,12 @@ import is truly complete.
 **Q3.** What is the main practical advantage of an `import {}` block over
 the CLI `terraform import` command?
 
-A. It's faster to type
-B. It can import resources of any type, while the CLI form is limited
-   to a subset of resource types
-C. It is reviewable in `terraform plan` before anything happens, and
-   lives in version control as a repeatable, auditable action
-D. It doesn't require knowing the resource's import ID
+- A) It's faster to type
+- B) It can import resources of any type, while the CLI form is limited
+     to a subset of resource types
+- C) It is reviewable in `terraform plan` before anything happens, and
+     lives in version control as a repeatable, auditable action
+- D) It doesn't require knowing the resource's import ID
 
 <details>
 <summary>Answer</summary>
@@ -2292,11 +2341,11 @@ type that supports import (B is wrong).
 **Q4.** Does `terraform state rm aws_s3_bucket.uploads` delete the bucket
 in AWS?
 
-A. Yes, immediately
-B. Yes, but only after the next `apply`
-C. No — the resource is untouched in AWS; only Terraform's state record
-   of it is removed
-D. It depends on whether `force_destroy` is set to `true`
+- A) Yes, immediately
+- B) Yes, but only after the next `apply`
+- C) No — the resource is untouched in AWS; only Terraform's state record
+     of it is removed
+- D) It depends on whether `force_destroy` is set to `true`
 
 <details>
 <summary>Answer</summary>
@@ -2314,10 +2363,10 @@ only affects whether `destroy` can delete a non-empty S3 bucket.
 exists, what does the next `terraform plan` propose, and what is the
 correct recovery action?
 
-A. No changes — Terraform detects the resource still exists in AWS and re-tracks it automatically
-B. To create the resource — state no longer knows it exists. Correct recovery: run `terraform import`, not `terraform apply`
-C. An error, refusing to plan until the resource is explicitly re-imported
-D. To destroy the resource
+- A) No changes — Terraform detects the resource still exists in AWS and re-tracks it automatically
+- B) To create the resource — state no longer knows it exists. Correct recovery: run `terraform import`, not `terraform apply`
+- C) An error, refusing to plan until the resource is explicitly re-imported
+- D) To destroy the resource
 
 <details>
 <summary>Answer</summary>
@@ -2337,10 +2386,10 @@ the existing resource — not `terraform apply`.
 `06-main.tf` but the `import {}` block from Part B is still in the file.
 You then run `terraform plan`. What happens?
 
-A. Plan shows no changes — Terraform resolves the rename automatically
-B. Plan shows destroy + create for the bucket
-C. Error: "Configuration for import target does not exist" — the `import {}` block still references `aws_s3_bucket.legacy`
-D. Plan shows the import running again
+- A) Plan shows no changes — Terraform resolves the rename automatically
+- B) Plan shows destroy + create for the bucket
+- C) Error: "Configuration for import target does not exist" — the `import {}` block still references `aws_s3_bucket.legacy`
+- D) Plan shows the import running again
 
 <details>
 <summary>Answer</summary>
@@ -2357,12 +2406,12 @@ block first, then rename, then run `terraform state mv`.
 **Q7.** What does `terraform state push terraform.tfstate` do to the
 current remote state?
 
-A. Merges the local file's contents with the current remote state
-B. Overwrites the current remote state entirely with the local file's
-   contents — does not merge
-C. Compares the two and only updates fields that differ
-D. Refuses to run unless the local file's `serial` is higher than the
-   remote state's current `serial`
+- A) Merges the local file's contents with the current remote state
+- B) Overwrites the current remote state entirely with the local file's
+     contents — does not merge
+- C) Compares the two and only updates fields that differ
+- D) Refuses to run unless the local file's `serial` is higher than the
+     remote state's current `serial`
 
 <details>
 <summary>Answer</summary>
@@ -2381,13 +2430,13 @@ check whether the restored state matches reality.
 immediately runs `terraform force-unlock <ID>` without checking anything
 else. What is the risk?
 
-A. None — `force-unlock` validates it's safe before removing the lock
-B. If an apply genuinely is still running, removing the lock allows a
-   second apply to start concurrently, risking state corruption
-C. `force-unlock` will simply fail if the apply is still running —
-   Terraform detects this automatically
-D. The lock will automatically reappear if the running apply detects
-   it was removed
+- A) None — `force-unlock` validates it's safe before removing the lock
+- B) If an apply genuinely is still running, removing the lock allows a
+     second apply to start concurrently, risking state corruption
+- C) `force-unlock` will simply fail if the apply is still running —
+     Terraform detects this automatically
+- D) The lock will automatically reappear if the running apply detects
+     it was removed
 
 <details>
 <summary>Answer</summary>

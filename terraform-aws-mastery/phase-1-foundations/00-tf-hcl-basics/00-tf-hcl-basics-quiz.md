@@ -1,7 +1,8 @@
 # Quiz — Demo 00: IaC & HCL Foundations
 
-> TA-004 exam style. One correct answer unless stated otherwise.
-> Target: 80% or above before moving to Demo 01.
+> One correct answer per question unless stated otherwise.
+> Target: 80% or above before moving to Demo 05.
+> TA-004 exam style.
 
 ---
 
@@ -205,7 +206,7 @@ Score guide:
 
 | Score | Action |
 |---|---|
-| 10/10 | Proceed to Demo 01 |
-| 8-9/10 | Review wrong answers in Anki, then proceed |
-| 6-7/10 | Re-read relevant README sections, retry |
-| Below 6/10 | Re-read Demo 00 before proceeding |
+| 10/10 | Import Anki cards, move to Demo 01 |
+| 9/10 | Review the wrong answer, then proceed |
+| 8/10 | Re-read the relevant section, retry those questions |
+| Below 8/10 | Re-read the full demo and redo the walkthrough before proceeding |

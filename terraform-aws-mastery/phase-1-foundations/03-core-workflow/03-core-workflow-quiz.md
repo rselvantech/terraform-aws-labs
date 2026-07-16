@@ -1,20 +1,20 @@
 # Quiz — Demo 03: Core Workflow Deep-Dive: Plan Flags, Graph, and Debug Logging
 
-Test your understanding of this demo's concepts. Each question is a
-scenario — choose the best answer, then check yourself against the
-explanation.
+> One correct answer per question unless stated otherwise.
+> Target: 80% or above before moving to Demo 05.
+> TA-004 exam style.
 
 ---
 
 **Q1.** You run `terraform fmt -check -recursive` in a project with a
 `break-fix/` subdirectory and it exits `0`. What does this confirm?
 
-A. All `.tf` files in the project, including `break-fix/`, are already
-   in canonical format
-B. Only the current directory's `.tf` files are formatted — `break-fix/`
-   wasn't checked
-C. The configuration is valid and ready to apply
-D. No provider credentials are configured
+- A) All `.tf` files in the project, including `break-fix/`, are already
+     in canonical format
+- B) Only the current directory's `.tf` files are formatted — `break-fix/`
+     wasn't checked
+- C) The configuration is valid and ready to apply
+- D) No provider credentials are configured
 
 <details>
 <summary>Answer</summary>
@@ -33,11 +33,11 @@ configuration or check credentials.)
 from a different AWS account than the one actually deploying this
 configuration. What is the EARLIEST point this would be detected?
 
-A. `terraform validate`
-B. `terraform plan` (refresh step)
-C. `terraform apply` — but only if you inspect the deployed policy
-   afterward (e.g. via `TF_LOG=DEBUG`)
-D. Never — Terraform has no way to detect this
+- A) `terraform validate`
+- B) `terraform plan` (refresh step)
+- C) `terraform apply` — but only if you inspect the deployed policy
+     afterward (e.g. via `TF_LOG=DEBUG`)
+- D) Never — Terraform has no way to detect this
 
 <details>
 <summary>Answer</summary>
@@ -66,13 +66,13 @@ terraform apply tfplan
 
 What happens?
 
-A. `apply tfplan` silently applies the original plan, ignoring the new
-   change
-B. `apply tfplan` silently incorporates the teammate's new change
-   automatically
-C. `apply tfplan` fails — the saved plan no longer matches current
-   config/state
-D. `apply tfplan` prompts you to choose which version to apply
+- A) `apply tfplan` silently applies the original plan, ignoring the new
+     change
+- B) `apply tfplan` silently incorporates the teammate's new change
+     automatically
+- C) `apply tfplan` fails — the saved plan no longer matches current
+     config/state
+- D) `apply tfplan` prompts you to choose which version to apply
 
 <details>
 <summary>Answer</summary>
@@ -94,10 +94,10 @@ You run `terraform apply -target=aws_sqs_queue.notifications` (Resource
 A) and it completes successfully. What is the state of Resource B's
 pending change?
 
-A. It was also applied, since both had pending changes
-B. It remains unapplied — a follow-up plan/apply is needed
-C. It was discarded — the change is lost permanently
-D. `-target` automatically applies all resources in the same file
+- A) It was also applied, since both had pending changes
+- B) It remains unapplied — a follow-up plan/apply is needed
+- C) It was discarded — the change is lost permanently
+- D) `-target` automatically applies all resources in the same file
 
 <details>
 <summary>Answer</summary>
@@ -116,11 +116,11 @@ isn't lost (C) — it's just pending, same as before the targeted apply.
 **Q5.** Someone manually adds a tag to an SNS topic via the AWS Console.
 You run `terraform plan -refresh-only`. What does the output show?
 
-A. Nothing — `-refresh-only` doesn't check tags
-B. The tag addition, framed as drift ("changed outside of Terraform"),
-   with no proposed action
-C. The tag addition, with a proposal to remove it immediately
-D. An error, because the topic was modified outside Terraform
+- A) Nothing — `-refresh-only` doesn't check tags
+- B) The tag addition, framed as drift ("changed outside of Terraform"),
+     with no proposed action
+- C) The tag addition, with a proposal to remove it immediately
+- D) An error, because the topic was modified outside Terraform
 
 <details>
 <summary>Answer</summary>
@@ -141,11 +141,11 @@ configuration where every resource depends on the previous one (a linear
 chain), what effect does changing `-parallelism` from 10 to 2 have on
 apply behavior?
 
-A. Default is 10; changing to 2 roughly doubles apply time
-B. Default is 5; changing to 2 has no effect
-C. Default is 10; changing to 2 has no meaningful effect, since only one
-   resource is ever ready to run at a time in a linear chain
-D. Default is 10; changing to 2 causes the apply to fail
+- A) Default is 10; changing to 2 roughly doubles apply time
+- B) Default is 5; changing to 2 has no effect
+- C) Default is 10; changing to 2 has no meaningful effect, since only one
+     resource is ever ready to run at a time in a linear chain
+- D) Default is 10; changing to 2 causes the apply to fail
 
 <details>
 <summary>Answer</summary>
@@ -167,11 +167,11 @@ but `aws_sns_topic_subscription.queue`'s arguments (`topic_arn`,
 `protocol`, `endpoint`) don't reference the policy resource at all. What
 does this edge represent?
 
-A. An error in the graph — this edge shouldn't exist
-B. An implicit dependency inferred from a shared variable
-C. An explicit dependency added via `depends_on`, expressing an ordering
-   requirement with no attribute-reference equivalent
-D. A circular dependency that Terraform will fail to resolve
+- A) An error in the graph — this edge shouldn't exist
+- B) An implicit dependency inferred from a shared variable
+- C) An explicit dependency added via `depends_on`, expressing an ordering
+     requirement with no attribute-reference equivalent
+- D) A circular dependency that Terraform will fail to resolve
 
 <details>
 <summary>Answer</summary>
@@ -192,12 +192,12 @@ plan -refresh-only`. The resulting `debug.log` is several thousand lines.
 What is the most effective next step to find information about a specific
 failing resource, e.g. `aws_sqs_queue_policy.notifications`?
 
-A. Read the entire file from the top
-B. Set `TF_LOG=TRACE` instead and try again
-C. `grep` the log file for the resource type/relevant API action (e.g.
-   `GetQueueAttributes`)
-D. Delete the log and re-run without `TF_LOG` — it's too verbose to be
-   useful
+- A) Read the entire file from the top
+- B) Set `TF_LOG=TRACE` instead and try again
+- C) `grep` the log file for the resource type/relevant API action (e.g.
+     `GetQueueAttributes`)
+- D) Delete the log and re-run without `TF_LOG` — it's too verbose to be
+     useful
 
 <details>
 <summary>Answer</summary>

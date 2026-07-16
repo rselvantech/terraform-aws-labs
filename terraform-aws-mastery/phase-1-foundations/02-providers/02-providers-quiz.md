@@ -1,7 +1,8 @@
 # Quiz — Demo 02: Providers: Configuration, Versioning, and the Lock File
 
-> TA-004 exam style. One correct answer unless stated otherwise.
-> Target: 80% or above before moving to Demo 03.
+> One correct answer per question unless stated otherwise.
+> Target: 80% or above before moving to Demo 05.
+> TA-004 exam style.
 
 ---
 
@@ -162,7 +163,7 @@ Score guide:
 
 | Score | Action |
 |---|---|
-| 8/8 | Proceed to Demo 03 |
-| 6-7/8 | Review wrong answers in Anki, then proceed |
-| 4-5/8 | Re-read relevant README sections, retry |
-| Below 4/8 | Re-read Demo 02 before proceeding |
+| 8/8 | Import Anki cards, move to Demo 03 |
+| 7/8 | Review the wrong answer, then proceed |
+| 6/8 | Re-read the relevant section, retry those questions |
+| Below 6/8 | Re-read the full demo and redo the walkthrough before proceeding |

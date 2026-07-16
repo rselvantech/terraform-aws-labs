@@ -23,7 +23,6 @@ that happens, you need to move Terraform state off your local machine into
 a shared remote backend with locking.
 
 **What this demo builds:**
-
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  PART A — Production-grade S3 app bucket                                │
@@ -613,6 +612,10 @@ Problems with the DynamoDB approach:
 - Extra IAM permissions required for DynamoDB
 - If the DynamoDB table and S3 bucket are in different regions, the lock
   could lag behind the state
+
+> **Deprecated:** the `dynamodb_table` argument on the S3 backend is
+> deprecated as of Terraform 1.11 in favor of `use_lockfile = true`.
+> Do NOT use `dynamodb_table` in new configurations.
 
 **How locking works now — S3 native (`use_lockfile = true`):**
 
@@ -1500,39 +1503,99 @@ Console → S3 → Buckets
 
 ---
 
-## Cert Tips — TA-004 Objectives Covered
+## Cert Tips
 
-**Objective 2a/2b — Providers and version constraints:**
-> Providers are separately versioned plugins. `~> 6.47.0` allows 6.47.x
-> patches, rejects 6.48+. Exam: "Where does Terraform download providers?"
-> → `registry.terraform.io`
+### Exam Objective Mapping
 
-**Objective 2d — State purpose:**
-> State maps Terraform resource addresses to real-world infrastructure IDs.
-> Without state: Terraform cannot detect drift or know what it manages.
-> Exam: "What happens if you delete terraform.tfstate?" → Terraform loses
-> track of everything; next apply tries to create all resources again.
+| Demo concept / command | Exam objective | Notes |
+|---|---|---|
+| AWS provider v5 vs v6, version constraints (`~> 6.47.0`) | TA-004 Obj 2a/2b — Providers and version constraints | Exam trap: "Where does Terraform download providers?" → `registry.terraform.io` |
+| `aws_s3_bucket` + 3 standalone config resources | TA-004 Obj 4 — Resource configuration | v6 pattern — no inline `versioning {}` etc. |
+| `depends_on` meta-argument | TA-004 Obj 4 | S3 eventual consistency — implicit reference alone is insufficient |
+| State purpose, `terraform.tfstate` | TA-004 Obj 2d — State purpose | "What happens if you delete terraform.tfstate?" → Terraform loses track of everything; next apply recreates it all |
+| `backend "s3"`, remote state | TA-004 Obj 5a — Remote backends | Team collaboration, no local state loss, CI/CD integration |
+| `use_lockfile = true` | TA-004 Obj 5b — State locking | See deprecation note in Concepts — DynamoDB no longer required |
+| `terraform init -migrate-state` | TA-004 Obj 3a–3e — Core workflow | Prompts for confirmation before copying, never automatic |
+| `terraform plan -refresh-only` / `apply -refresh-only` | TA-004 Obj 3 — Drift detection | Refresh-only isolates drift detection from pending config changes |
 
-**Objective 5a — Remote backends:**
-> Remote backends store state outside the local machine — S3, HCP Terraform,
-> Azure Blob. Exam: "What is the benefit of remote state?" → team
-> collaboration, no local state loss, CI/CD integration.
+### Common Exam Traps
 
-**Objective 5b — State locking:**
-> Locking prevents concurrent applies from corrupting state. Exam traps:
+| Scenario | What the task actually requires | Common wrong approach |
+|---|---|---|
+| "Does `terraform plan` make any changes to infrastructure or state?" | No — read-only, calls provider `Read()` only | Assuming `plan` writes to state because it performs a refresh |
+| "Is DynamoDB required for S3 state locking in Terraform 1.11+?" | No — `use_lockfile = true` uses S3 conditional writes | Assuming DynamoDB is still mandatory because older guides say so |
+| "Can local state be locked?" | No — locking requires shared remote state; a local lock protects nothing | Assuming locking applies regardless of backend type |
+| "What happens if two engineers apply simultaneously against S3-locked state?" | Second apply fails immediately with "Error acquiring the state lock" | Assuming the second apply queues and waits |
+| "Does `depends_on` need to be used everywhere two resources reference each other?" | No — only needed when a dependency can't be expressed via attribute reference (e.g. eventual consistency, not data flow) | Adding `depends_on` redundantly where an implicit reference already creates the dependency |
 
-| Question | Answer |
-|---|---|
-| Is DynamoDB required for S3 locking? | **No** — deprecated in v1.11, use `use_lockfile = true` |
-| What does `terraform force-unlock` do? | Releases a stuck lock — only when NO apply is running |
-| Does `terraform plan` lock state? | **Yes** — briefly during refresh |
-| What file does S3 locking create? | `.tfstate.tflock` — same path as state file |
-| Can local state be locked? | **No** — locking requires shared remote state |
+### Exam Task — Write a complete configuration
 
-**Objective 3a–3e — Core workflow:**
-> `terraform init -migrate-state` is a variant of `terraform init` that
-> copies existing state to a new backend configuration. It prompts for
-> confirmation before copying — never automatic.
+**Task:** Write a Terraform configuration for a single S3 bucket with versioning enabled, AES256 encryption, and all public access blocked, using AWS provider v6 standalone resources.
+
+**Block types required:** `terraform`, `provider`, `resource` (×4), `depends_on` meta-argument
+
+**Official documentation:**
+- [`aws_s3_bucket_versioning` resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_versioning)
+- [`aws_s3_bucket_public_access_block` resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_public_access_block)
+
+**What to practise:**
+1. Open both registry pages — check the Argument Reference sections
+2. Write the configuration from scratch without looking at this demo's `src/` files
+3. Validate: `terraform init && terraform validate`
+
+<details>
+<summary>Reference solution (open only after attempting)</summary>
+
+```hcl
+terraform {
+  required_version = "~> 1.15.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 6.47.0" }
+  }
+}
+
+provider "aws" {
+  region  = "us-east-2"
+  profile = "default"
+}
+
+resource "aws_s3_bucket" "app" {
+  bucket = "cloudnova-exam-task-demo"
+}
+
+resource "aws_s3_bucket_versioning" "app" {
+  bucket = aws_s3_bucket.app.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+  depends_on = [aws_s3_bucket.app]
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "app" {
+  bucket = aws_s3_bucket.app.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+  depends_on = [aws_s3_bucket.app]
+}
+
+resource "aws_s3_bucket_public_access_block" "app" {
+  bucket                  = aws_s3_bucket.app.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+  depends_on              = [aws_s3_bucket.app]
+}
+```
+
+**Arguments you must know without looking up:**
+- `versioning_configuration.status` — must be `Enabled` or `Suspended`, never `Disabled` once versioning has been turned on
+- All four booleans on `aws_s3_bucket_public_access_block` must be `true` together — partial protection leaves gaps
+
+</details>
 
 ---
 
@@ -1620,6 +1683,18 @@ Fix: `restrict_public_buckets = true`
 
 </details>
 
+**Cleanup:**
+
+```bash
+# Still inside src/break-fix/
+terraform destroy -auto-approve
+rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup
+
+# Verify — clean state
+ls -la
+# Only broken.tf should remain
+```
+
 ---
 
 ## Interview Prep
@@ -1664,6 +1739,10 @@ This is the chicken-and-egg problem with remote state. Before `terraform init` c
    apply creates a new version. If state corrupts, download the previous
    version from Console and restore with `terraform state push`.
 
+6. **Do NOT use the `dynamodb_table` backend argument.** Deprecated since
+   Terraform 1.11 — `use_lockfile = true` replaces it with no extra AWS
+   resource, no extra cost, no extra IAM permissions.
+
 ---
 
 ## Quick Commands Reference
@@ -1702,7 +1781,7 @@ patterns for CI/CD.
 #deck:Terraform AWS Mastery::Phase 1 - Foundations::01-tf-fundamentals-s3
 #separator:Comma
 #columns:Front,Back,Tags
-"You get: NoSuchPublicAccessBlockConfiguration when applying aws_s3_bucket_public_access_block. What causes this and how do you fix it?","Race condition — AWS S3 eventual consistency. CreateBucket returned 200 OK but the bucket had not fully propagated internally when PutPublicAccessBlock was called. Fix: add depends_on = [aws_s3_bucket.app] to the public access block resource. This forces sequential execution.","demo01,s3,depends_on,race-condition,ta004-obj4"
+"You get: NoSuchPublicAccessBlockConfiguration when applying aws_s3_bucket_public_access_block. What causes this and how do you fix it?","Race condition — AWS S3 eventual consistency. CreateBucket returned 200 OK but the bucket had not fully propagated internally when PutPublicAccessBlock was called. Fix: add depends_on = [aws_s3_bucket.app] to the public access block resource. This forces sequential execution.","demo01,s3,depends_on,race-condition,ta004-obj4,needs-verification"
 "What is a meta-argument in Terraform? Name all five.","A meta-argument is a special argument available on every resource block regardless of provider — controls Terraform's own behaviour. The five: depends_on (explicit dependency), count (N copies), for_each (one per map/set item), provider (which alias), lifecycle (create/update/delete behaviour).","demo01,meta-arguments,ta004-obj4"
 "What does depends_on do differently from an implicit attribute reference?","Implicit reference (aws_s3_bucket.app.id): creates graph dependency, starts dependent immediately when bucket API returns 200. depends_on: waits for the dependency to fully complete ALL operations before starting the dependent — gives AWS time to propagate internally.","demo01,depends_on,s3,ta004-obj4"
 "What specific versions are AWS provider v5 and v6?","v5 = versions 5.x, released May 2023. v6 = versions 6.x, released June 2025 with breaking changes from v5. This series uses v6.47.0. Key v6 change: all S3 inline configuration blocks removed — standalone resources required.","demo01,provider,versions,ta004-obj2"
@@ -1710,17 +1789,17 @@ patterns for CI/CD.
 "What are the four standalone resources for a production-grade S3 bucket in v6?","1. aws_s3_bucket — the bucket. 2. aws_s3_bucket_versioning — version history. 3. aws_s3_bucket_server_side_encryption_configuration — AES256 or KMS. 4. aws_s3_bucket_public_access_block — all four booleans true.","demo01,s3,v6,ta004-obj4"
 "What does default_tags in the AWS provider block do?","Tags in default_tags are automatically merged into every resource created by that provider. No need to write tags = local.common_tags in every resource block. Resource-level tags merge on top — in conflicts the resource-level tag wins.","demo01,provider,tags,ta004-obj2"
 "Why must the S3 state bucket be created outside Terraform?","Chicken-and-egg: Terraform needs the state bucket to exist before it can initialise the backend. You cannot use Terraform to create the bucket that stores Terraform's own state. Create via Console first.","demo01,state,backend,ta004-obj5"
-"What does terraform init -migrate-state do?","Copies existing local state to the newly configured remote backend. Prompts for confirmation. Local terraform.tfstate becomes stale backup. S3 copy is now authoritative for all future applies.","demo01,state,backend,ta004-obj5"
+"What does terraform init -migrate-state do?","Copies existing local state to the newly configured remote backend. Prompts for confirmation. Local terraform.tfstate becomes stale backup. S3 copy is now authoritative for all future applies.","demo01,state,backend,ta004-obj5,live-verified"
 "What is state locking and why is it needed?","Prevents two simultaneous terraform apply runs from corrupting state. Without locking: two applies read same state, both write results, one overwrites the other — resources exist in AWS but disappear from state. Locking ensures only one apply modifies state at a time.","demo01,state,locking,ta004-obj5b"
-"Is DynamoDB required for S3 state locking in Terraform 1.11+?","No. use_lockfile = true uses S3 conditional writes to create a .tfstate.tflock file. dynamodb_table is deprecated in v1.11. No DynamoDB table, no extra cost, no extra service dependency.","demo01,state,locking,ta004-obj5b"
-"How does S3 native locking work technically?","S3 conditional write attempts to create terraform.tfstate.tflock — only succeeds if the file does not already exist (atomic operation). If file exists: another apply is running — error. When apply finishes: .tflock file deleted. Lock released.","demo01,state,locking,ta004-obj5b"
+"Is DynamoDB required for S3 state locking in Terraform 1.11+?","No. use_lockfile = true uses S3 conditional writes to create a .tfstate.tflock file. dynamodb_table is deprecated in v1.11. No DynamoDB table, no extra cost, no extra service dependency.","demo01,state,locking,ta004-obj5b,needs-verification"
+"How does S3 native locking work technically?","S3 conditional write attempts to create terraform.tfstate.tflock — only succeeds if the file does not already exist (atomic operation). If file exists: another apply is running — error. When apply finishes: .tflock file deleted. Lock released.","demo01,state,locking,ta004-obj5b,live-verified"
 "Can you lock local state? Why or why not?","No. Locking only makes sense for shared remote state. A lock on your local machine protects nothing — no other machine can access your local file. State locking is a coordination mechanism between multiple machines.","demo01,state,locking,ta004-obj5b"
-"What does terraform plan -refresh-only do?","Reads actual current state from AWS via provider Read() API, compares to last known state in .tfstate, shows what changed outside Terraform. Makes ZERO changes to infrastructure or state. Use to detect drift.","demo01,drift,plan,ta004-obj3"
-"After detecting drift with terraform plan -refresh-only, what are your two choices?","1. terraform apply -refresh-only: accepts drift into state — keeps the manual change. 2. terraform apply: removes drift — reconciles AWS back to desired state in .tf files. Choice 2 is correct production behaviour (Terraform is source of truth).","demo01,drift,apply,ta004-obj3"
+"What does terraform plan -refresh-only do?","Reads actual current state from AWS via provider Read() API, compares to last known state in .tfstate, shows what changed outside Terraform. Makes ZERO changes to infrastructure or state. Use to detect drift.","demo01,drift,plan,ta004-obj3,live-verified"
+"After detecting drift with terraform plan -refresh-only, what are your two choices?","1. terraform apply -refresh-only: accepts drift into state — keeps the manual change. 2. terraform apply: removes drift — reconciles AWS back to desired state in .tf files. Choice 2 is correct production behaviour (Terraform is source of truth).","demo01,drift,apply,ta004-obj3,live-verified"
 "How much does AES256 (SSE-S3) encryption cost on S3?","Always free — AWS absorbs the cost of S3-managed keys. SSE-KMS (customer-managed keys) is paid: $0.03 per 10,000 requests + $1/month per CMK. Use AES256 unless you need key rotation audit trails.","demo01,s3,encryption"
 "What does S3 versioning on the state bucket give you?","Every terraform apply creates a new version of the state file. Recovery procedure: Console → state bucket → terraform.tfstate → Show versions → download older version → terraform state push terraform.tfstate. This is the undo button for state corruption.","demo01,state,versioning"
 "Two terraform {} blocks exist — versions.tf and backend.tf. Is this valid?","Yes. Terraform merges all .tf files in a directory. backend {} in backend.tf merges with required_version and required_providers in versions.tf. Only restriction: same setting cannot be declared twice.","demo01,hcl,backend,ta004-obj2"
-"What does force_destroy = true on aws_s3_bucket do?","Allows terraform destroy to delete the bucket even if it contains objects — Terraform deletes all objects first. Remove in production — prevents accidental deletion of live data. Use only in demo/test environments.","demo01,s3,force_destroy"
+"What does force_destroy = true on aws_s3_bucket do?","Allows terraform destroy to delete the bucket even if it contains objects — Terraform deletes all objects first. Remove in production — prevents accidental deletion of live data. Use only in demo/test environments.","demo01,s3,force_destroy,needs-verification"
 "What is the S3 state bucket naming convention and why?","tfstate-project-accountid-region. Example: tfstate-cloudnova-163125980376-us-east-2. Account ID = globally unique across all AWS accounts. Region = location explicit. Avoids generic names that conflict across projects.","demo01,state,naming"
 ```
 
@@ -1730,7 +1809,7 @@ patterns for CI/CD.
 
 **01-tf-fundamentals-s3-quiz.md:**
 
-```
+````markdown
 # Quiz — Demo 01: Terraform Fundamentals: First Real AWS Project with S3
 
 > One correct answer per question unless stated otherwise.
@@ -1895,4 +1974,4 @@ Score guide:
 | 7/8 | Review the wrong answer, then proceed |
 | 6/8 | Re-read the relevant section, retry those questions |
 | Below 6/8 | Re-read the full demo and redo the walkthrough before proceeding |
-```
+````

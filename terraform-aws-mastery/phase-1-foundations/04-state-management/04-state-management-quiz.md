@@ -8,11 +8,11 @@
 
 **Q1.** What does `terraform import aws_s3_bucket.uploads my-bucket` actually do?
 
-A. Creates a new S3 bucket named `my-bucket` and tracks it in state
-B. Adds the existing bucket `my-bucket` to Terraform's state, mapped
-   to the address `aws_s3_bucket.uploads` — creates nothing in AWS
-C. Generates a `.tf` resource block matching the bucket's current configuration
-D. Copies the bucket's configuration into a new Terraform workspace
+- A) Creates a new S3 bucket named `my-bucket` and tracks it in state
+- B) Adds the existing bucket `my-bucket` to Terraform's state, mapped
+     to the address `aws_s3_bucket.uploads` — creates nothing in AWS
+- C) Generates a `.tf` resource block matching the bucket's current configuration
+- D) Copies the bucket's configuration into a new Terraform workspace
 
 <details>
 <summary>Answer</summary>
@@ -28,20 +28,19 @@ different reasons). It also has nothing to do with workspaces (D).
 **Q2.** After a successful `terraform import`, `terraform plan` shows a
 `tags_all` pending change. What does this indicate, and what should you do?
 
-A. The import failed silently — re-run import
-B. The `.tf` block is incomplete — add more arguments until plan is clean
-C. This is expected when `default_tags` are configured — run `terraform apply` to close the gap, then confirm plan shows zero changes
-D. State is corrupted — restore from S3 versioning
+- A) The import failed silently — re-run import
+- B) The `.tf` block is incomplete — add more arguments until plan is clean
+- C) This is expected when `default_tags` are configured — run `terraform apply` to close the gap, then confirm plan shows zero changes
+- D) State is corrupted — restore from S3 versioning
 
 <details>
 <summary>Answer</summary>
 
 **C.** A `tags_all` change after import is expected behavior when
-`default_tags` are configured in the provider block. The import reads
-the resource's current state (no tags), but `default_tags` specifies
-that all resources should have the common tags. Running `apply` closes
-this gap. Only after that apply does `plan` show zero changes and the
-import is truly complete.
+`default_tags` are configured. The import reads the resource's current
+state (no tags), but `default_tags` specifies that all resources should
+have the common tags. Running `apply` closes this gap. Only after that
+apply does `plan` show zero changes and the import is truly complete.
 
 </details>
 
@@ -50,12 +49,12 @@ import is truly complete.
 **Q3.** What is the main practical advantage of an `import {}` block over
 the CLI `terraform import` command?
 
-A. It's faster to type
-B. It can import resources of any type, while the CLI form is limited
-   to a subset of resource types
-C. It is reviewable in `terraform plan` before anything happens, and
-   lives in version control as a repeatable, auditable action
-D. It doesn't require knowing the resource's import ID
+- A) It's faster to type
+- B) It can import resources of any type, while the CLI form is limited
+     to a subset of resource types
+- C) It is reviewable in `terraform plan` before anything happens, and
+     lives in version control as a repeatable, auditable action
+- D) It doesn't require knowing the resource's import ID
 
 <details>
 <summary>Answer</summary>
@@ -73,11 +72,11 @@ type that supports import (B is wrong).
 **Q4.** Does `terraform state rm aws_s3_bucket.uploads` delete the bucket
 in AWS?
 
-A. Yes, immediately
-B. Yes, but only after the next `apply`
-C. No — the resource is untouched in AWS; only Terraform's state record
-   of it is removed
-D. It depends on whether `force_destroy` is set to `true`
+- A) Yes, immediately
+- B) Yes, but only after the next `apply`
+- C) No — the resource is untouched in AWS; only Terraform's state record
+     of it is removed
+- D) It depends on whether `force_destroy` is set to `true`
 
 <details>
 <summary>Answer</summary>
@@ -95,10 +94,10 @@ only affects whether `destroy` can delete a non-empty S3 bucket.
 exists, what does the next `terraform plan` propose, and what is the
 correct recovery action?
 
-A. No changes — Terraform detects the resource still exists in AWS and re-tracks it automatically
-B. To create the resource — state no longer knows it exists. Correct recovery: run `terraform import`, not `terraform apply`
-C. An error, refusing to plan until the resource is explicitly re-imported
-D. To destroy the resource
+- A) No changes — Terraform detects the resource still exists in AWS and re-tracks it automatically
+- B) To create the resource — state no longer knows it exists. Correct recovery: run `terraform import`, not `terraform apply`
+- C) An error, refusing to plan until the resource is explicitly re-imported
+- D) To destroy the resource
 
 <details>
 <summary>Answer</summary>
@@ -118,10 +117,10 @@ the existing resource — not `terraform apply`.
 `06-main.tf` but the `import {}` block from Part B is still in the file.
 You then run `terraform plan`. What happens?
 
-A. Plan shows no changes — Terraform resolves the rename automatically
-B. Plan shows destroy + create for the bucket
-C. Error: "Configuration for import target does not exist" — the `import {}` block still references `aws_s3_bucket.legacy`
-D. Plan shows the import running again
+- A) Plan shows no changes — Terraform resolves the rename automatically
+- B) Plan shows destroy + create for the bucket
+- C) Error: "Configuration for import target does not exist" — the `import {}` block still references `aws_s3_bucket.legacy`
+- D) Plan shows the import running again
 
 <details>
 <summary>Answer</summary>
@@ -138,12 +137,12 @@ block first, then rename, then run `terraform state mv`.
 **Q7.** What does `terraform state push terraform.tfstate` do to the
 current remote state?
 
-A. Merges the local file's contents with the current remote state
-B. Overwrites the current remote state entirely with the local file's
-   contents — does not merge
-C. Compares the two and only updates fields that differ
-D. Refuses to run unless the local file's `serial` is higher than the
-   remote state's current `serial`
+- A) Merges the local file's contents with the current remote state
+- B) Overwrites the current remote state entirely with the local file's
+     contents — does not merge
+- C) Compares the two and only updates fields that differ
+- D) Refuses to run unless the local file's `serial` is higher than the
+     remote state's current `serial`
 
 <details>
 <summary>Answer</summary>
@@ -162,13 +161,13 @@ check whether the restored state matches reality.
 immediately runs `terraform force-unlock <ID>` without checking anything
 else. What is the risk?
 
-A. None — `force-unlock` validates it's safe before removing the lock
-B. If an apply genuinely is still running, removing the lock allows a
-   second apply to start concurrently, risking state corruption
-C. `force-unlock` will simply fail if the apply is still running —
-   Terraform detects this automatically
-D. The lock will automatically reappear if the running apply detects
-   it was removed
+- A) None — `force-unlock` validates it's safe before removing the lock
+- B) If an apply genuinely is still running, removing the lock allows a
+     second apply to start concurrently, risking state corruption
+- C) `force-unlock` will simply fail if the apply is still running —
+     Terraform detects this automatically
+- D) The lock will automatically reappear if the running apply detects
+     it was removed
 
 <details>
 <summary>Answer</summary>

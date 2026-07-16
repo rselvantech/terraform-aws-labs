@@ -31,6 +31,22 @@ primary region (`us-east-2`). This means one Terraform configuration must
 create resources in two different AWS regions simultaneously — your first
 multi-provider configuration using provider aliases.
 
+**What this demo builds:**
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PART A — Provider configuration and single bucket                      │
+│  Default + aliased AWS provider → one S3 bucket → terraform providers   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PART B — Lock file deep dive and multi-platform hashes                 │
+│  Read every lock file field → fix the Linux/macOS team problem →        │
+│  understand the safe terraform init -upgrade workflow                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PART C — State operations verification                                 │
+│  terraform state list/show → confirm multi-region deployment is         │
+│  tracked correctly by provider instance                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
 **What this demo covers:**
 - Every argument in the `provider "aws"` block and what each does
 - How Terraform discovers which resources belong to which provider
@@ -50,6 +66,16 @@ multi-provider configuration using provider aliases.
 ### Knowledge
 - Demo 00 — HCL syntax, block types, Terraform workflow
 - Demo 01 — AWS provider basics, named profile, `default_tags`
+
+### Required Tools
+
+No new tools this demo — uses the same Terraform CLI and AWS CLI installed
+and verified in Demo 00 and Demo 01.
+
+| Tool | Minimum version | Verify |
+|---|---|---|
+| Terraform CLI | `>= 1.15.0` | `terraform version` |
+| AWS CLI | `>= 2.x` | `aws --version` |
 
 ### Verify AWS Setup
 
@@ -345,11 +371,47 @@ provider "registry.terraform.io/hashicorp/aws" {
 }
 ```
 
+> **`version` — what controls it, and a common mix-up:** only changes
+> when `terraform init -upgrade` re-resolves the constraint and finds a
+> newer matching version, or when the constraint itself is edited and
+> `-upgrade` is run again. Plain `terraform init` never changes this
+> field. **Common misconception:** this is the *provider's* version,
+> not the Terraform CLI version — the CLI version requirement lives
+> separately in `required_version` inside the `terraform {}` block in
+> `versions.tf`, not in the lock file at all.
+
+> **`constraints` — what controls it:** copied verbatim from
+> `required_providers` in `versions.tf` every time `terraform init`
+> runs. Editing the constraint and re-running `init` updates this field
+> to match — but does NOT by itself change `version` unless the
+> currently locked version now falls outside the new constraint.
+> **Common misconception:** this field looks like it's what Terraform
+> enforces — it isn't. `version` is what's enforced; `constraints` is
+> recorded purely for human reference.
+
+> **`hashes` (`h1:`/`zh:`) — what controls them:** new `zh:` entries
+> are added only by `terraform init` (for the current platform) or
+> `terraform providers lock -platform=...` (for any specified
+> platform) — both are additive, never removing existing entries.
+> **Common misconception:** a checksum mismatch error does not mean
+> the provider is corrupted or malicious — it usually just means the
+> current platform's hash isn't in the lock file yet (see the
+> multi-platform problem below).
+
 **Why hashes exist — two-layer security:**
 
 Terraform uses two mechanisms together to protect provider downloads:
 
 **Layer 1 — GPG signature (protects the first download):**
+
+> **What is GPG?** GPG (GNU Privacy Guard) is a general-purpose,
+> open-source implementation of the OpenPGP standard for encrypting and
+> digitally signing data — not a Terraform-specific technology. A
+> digital signature made with GPG lets anyone holding the signer's
+> public key verify that a file genuinely came from that signer and
+> hasn't been altered since. Terraform uses it here to confirm a
+> downloaded provider binary genuinely came from HashiCorp.
+
 HashiCorp signs every provider binary with their private GPG key before
 publishing it to the registry. On every download, Terraform verifies this
 signature against HashiCorp's public key. A binary not signed by HashiCorp
@@ -357,6 +419,15 @@ signature against HashiCorp's public key. A binary not signed by HashiCorp
 This is why you see `(signed by HashiCorp)` in the `terraform init` output.
 
 **Layer 2 — SHA256 hashes in the lock file (protects all subsequent downloads):**
+
+> **What is SHA256?** SHA-256 is a general-purpose cryptographic hash
+> function (part of the SHA-2 family) that takes any input and produces
+> a fixed 256-bit (64-character hex) digest. The same input always
+> produces the same hash; changing even one byte of the input produces
+> a completely different hash. Terraform uses it here purely to detect
+> whether a downloaded file differs from what was originally recorded —
+> not for encryption.
+
 On the first `terraform init`, Terraform downloads the provider, verifies
 the GPG signature, then computes SHA256 hashes and records them in the lock
 file. On every subsequent `terraform init`, Terraform re-downloads and checks
@@ -1141,32 +1212,81 @@ Console → S3 → General purpose buckets
 
 ---
 
-## Cert Tips — TA-004 Objectives Covered
+## Cert Tips
 
-**Objective 2a — Install and use providers:**
-> Providers are installed by `terraform init` from `registry.terraform.io`.
-> Exam: "Which command downloads providers?" → `terraform init`.
+### Exam Objective Mapping
 
-**Objective 2b — Version constraints:**
-> Exam commonly tests `~>` behaviour. `~> 6.47.0` allows 6.47.x, blocks
-> 6.48.0. `~> 6.0` allows any 6.x, blocks 7.0.0.
+| Demo concept / command | Exam objective | Notes |
+|---|---|---|
+| `terraform init` downloads from `registry.terraform.io` | TA-004 Obj 2a — Install and use providers | Exam trap: "which command downloads providers?" → `terraform init`, not `terraform get` |
+| Five version constraint operators (`=`, `!=`, `>=`, `<=`, `~>`) | TA-004 Obj 2b — Version constraints | `~>` is the most commonly tested operator |
+| `alias`, `provider` meta-argument | TA-004 Obj 2c — Provider configuration | All aliases share one version constraint — frequent trap |
+| Lock file fields (`version`, `constraints`, `h1:`, `zh:`) | TA-004 Obj 2d — Lock file | Exam tests whether it should be committed (yes) and what triggers an update |
+| `terraform providers`, `terraform providers lock` | TA-004 Obj 2a/2d | Read-only inspection vs. hash-generation commands — don't confuse the two |
+| `terraform init -upgrade` | TA-004 Obj 2b | Distinct from plain `terraform init`, which never installs beyond the lock file |
 
-**Objective 2c — Provider configuration:**
-> Exam: "Can two provider blocks use different versions of the same provider?"
-> → **No** — all instances (including aliases) share the version constraint.
+### Common Exam Traps
 
-**Objective 2d — Lock file:**
-> Exam: "What does `.terraform.lock.hcl` record?" → exact resolved version
-> + SHA256 hashes. "Should it be committed?" → **Yes**.
-> "How do you update it?" → `terraform init -upgrade` after changing the constraint.
+| Scenario | What the task actually requires | Common wrong approach |
+|---|---|---|
+| "Can two aliases of the same provider use different versions?" | No — one version constraint applies to every instance, aliased or not | Assuming each `alias` block can carry its own version |
+| "A teammate on a different OS gets a checksum mismatch on `terraform init`" | Missing platform-specific `zh:` hash — run `terraform providers lock -platform=...` | Assuming the provider itself is broken or re-downloading with `-upgrade` |
+| "Does `terraform init` install a newer patch version automatically?" | No — once a lock file exists, plain `init` always installs the exact locked version | Assuming `init` always fetches the latest version matching the constraint |
+| "A resource with `provider = aws.west` fails with `NoSuchBucket` even though the bucket exists" | A *related* resource (e.g. versioning) is missing the same `provider` meta-argument | Assuming the bucket resource itself has the wrong provider |
+| "Which version constraint should a reusable child module use?" | `>= X.0` — minimum only, let the root module pin the exact version | Copying the root module's `~> X.Y.0` pin into the child module |
 
-| Question | Answer |
-|---|---|
-| Can provider aliases have different versions? | **No** — all share one constraint |
-| Which command adds multi-platform hashes to lock file? | `terraform providers lock -platform=...` |
-| What does `terraform init -upgrade` do? | Downloads latest version within current constraints, updates lock file |
-| Should `.terraform.lock.hcl` be committed? | **Yes** — always |
-| What does `provider = aws.west` on a resource do? | Routes all API calls for that resource to the `west` aliased provider |
+### Exam Task — Write a complete configuration
+
+**Task:** Write a Terraform configuration with a default AWS provider in `us-east-2` and an aliased provider `west` in `us-west-2`, then create one S3 bucket in each region using the appropriate provider assignment.
+
+**Block types required:** `terraform`, `provider` (×2), `resource` (×2), `provider` meta-argument
+
+**Official documentation:**
+- [Provider Configuration — alias](https://developer.hashicorp.com/terraform/language/providers/configuration#alias-multiple-provider-configurations)
+- [Version Constraints](https://developer.hashicorp.com/terraform/language/expressions/version-constraints)
+
+**What to practise:**
+1. Open the alias documentation — check the exact syntax for `provider = aws.west`
+2. Write the configuration from scratch without looking at this demo's `src/` files
+3. Validate: `terraform init && terraform validate`
+
+<details>
+<summary>Reference solution (open only after attempting)</summary>
+
+```hcl
+terraform {
+  required_version = "~> 1.15.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 6.47.0" }
+  }
+}
+
+provider "aws" {
+  region  = "us-east-2"
+  profile = "default"
+}
+
+provider "aws" {
+  alias   = "west"
+  region  = "us-west-2"
+  profile = "default"
+}
+
+resource "aws_s3_bucket" "primary" {
+  bucket = "cloudnova-exam-task-primary"
+}
+
+resource "aws_s3_bucket" "archive" {
+  bucket   = "cloudnova-exam-task-archive"
+  provider = aws.west
+}
+```
+
+**Arguments you must know without looking up:**
+- `alias` — required on every provider block beyond the first for the same provider type
+- `provider = aws.west` — no quotes; this is a reference expression, not a string literal
+
+</details>
 
 ---
 
@@ -1257,6 +1377,18 @@ The valid values for `versioning_configuration.status` are case-sensitive:
 validation. Fix: `status = "Enabled"`.
 
 </details>
+
+**Cleanup:**
+
+```bash
+# Still inside src/break-fix/
+terraform destroy -auto-approve
+rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup
+
+# Verify — clean state
+ls -la
+# Only broken.tf should remain
+```
 
 ---
 
@@ -1370,11 +1502,12 @@ fully understood.
 
 **02-providers-quiz.md:**
 
-````
+````markdown
 # Quiz — Demo 02: Providers: Configuration, Versioning, and the Lock File
 
-> TA-004 exam style. One correct answer unless stated otherwise.
-> Target: 80% or above before moving to Demo 03.
+> One correct answer per question unless stated otherwise.
+> Target: 80% or above before moving to Demo 05.
+> TA-004 exam style.
 
 ---
 
@@ -1535,8 +1668,8 @@ Score guide:
 
 | Score | Action |
 |---|---|
-| 8/8 | Proceed to Demo 03 |
-| 6-7/8 | Review wrong answers in Anki, then proceed |
-| 4-5/8 | Re-read relevant README sections, retry |
-| Below 4/8 | Re-read Demo 02 before proceeding |
+| 8/8 | Import Anki cards, move to Demo 03 |
+| 7/8 | Review the wrong answer, then proceed |
+| 6/8 | Re-read the relevant section, retry those questions |
+| Below 6/8 | Re-read the full demo and redo the walkthrough before proceeding |
 ````

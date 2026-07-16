@@ -23,6 +23,37 @@ Your first week task: convince the team to adopt Infrastructure as Code.
 This demo is that conversation — the theory, the tool comparison, and
 your first hands-on proof that Terraform works.
 
+**What this demo builds:**
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PART 1 — What is IaC?                                                  │
+│  Four failure modes of manual infra → declarative vs imperative →       │
+│  idempotency                                                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PART 2 — Terraform vs the Alternatives                                 │
+│  CloudFormation, CDK, Ansible comparison → when to use each →           │
+│  Terraform's honest limitations → OpenTofu fork                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PART 3 — Terraform Architecture                                        │
+│  CLI core → provider plugin → state file → what each command does       │
+│  internally → the dependency graph (DAG)                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PART 4 — HCL: The Terraform Language                                   │
+│  All 8 top-level block types → all value types → naming conventions →   │
+│  case sensitivity → file naming → heredoc syntax                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PART 5 — terraform console                                             │
+│  Live HCL REPL — string/number/list/map functions, type conversions,    │
+│  no AWS required                                                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PART 6 — The Terraform Workflow                                        │
+│  init → validate → fmt → plan → apply → destroy, explained internally   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  LAB — Zero-cost local build: random_string + local_file →              │
+│  full workflow end to end → forced replacement → Break-Fix (3 errors)   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
 **What this demo covers:**
 - What IaC is, the exact problem it solves, and the four failure modes
   of manual infrastructure management
@@ -38,18 +69,6 @@ your first hands-on proof that Terraform works.
 - Full Terraform workflow on a zero-cost local + random provider lab
 
 **No AWS account or credentials required for this demo.**
-
----
-
-## Recall Check
-
-> First demo in the series — no prior demo to recall from.
-> Return here when starting Demo 01 to answer these from memory:
->
-> 1. Name the four failure modes of manual infrastructure management.
-> 2. Should `.terraform.lock.hcl` be committed to Git? Why?
-> 3. What does `terraform plan -out=tfplan` + `terraform apply tfplan`
->    guarantee that `terraform apply` alone does not?
 
 ---
 
@@ -84,9 +103,14 @@ echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
 sudo apt update && sudo apt install terraform
 
 # Windows — download installer from https://developer.hashicorp.com/terraform/install
+```
 
-# Verify — expected output: Terraform v1.15.x
+### Verify Terraform CLI
+
+```bash
 terraform version
+# Expected: a version string beginning "Terraform v1.15." — exact patch
+# version depends on when you installed and is not fixed here.
 ```
 
 ---
@@ -130,6 +154,27 @@ By the end of this demo you will be able to:
     └── break-fix/             
         └── broken.tf           # keep break-fix scenario code in one file
 ```
+
+---
+
+## Recall Check
+
+> First demo in the series — no prior demo to recall from.
+> Return here when starting Demo 01 to answer these from memory:
+
+1. Name the four failure modes of manual infrastructure management.
+2. Should `.terraform.lock.hcl` be committed to Git? Why?
+3. What does `terraform plan -out=tfplan` + `terraform apply tfplan`
+   guarantee that `terraform apply` alone does not?
+
+<details>
+<summary>Answers</summary>
+
+1. Drift, no audit trail, not repeatable, bus factor.
+2. Yes — it records the exact resolved provider version and SHA256 hash, guaranteeing every engineer and CI runner downloads the identical provider binary.
+3. It guarantees `apply` executes exactly the plan that was reviewed — `apply tfplan` applies the saved binary snapshot and does not re-read `.tf` files, so edits made after planning are silently ignored.
+
+</details>
 
 ---
 
@@ -1930,35 +1975,87 @@ cat terraform.tfstate
 
 ---
 
-## Cert Tips — TA-004 Objectives Covered
+## Cert Tips
 
-**Objective 1a — What is IaC:**
-> IaC = infrastructure defined in version-controlled code files, applied
-> programmatically. Key property: **idempotent**. Exam frequently tests:
-> "What happens when you run terraform apply with no config changes?" → plan
-> shows 0 changes, no API calls made.
+### Exam Objective Mapping
 
-**Objective 1b — Advantages of IaC:**
-> The five advantages the exam tests: **consistency** (no drift),
-> **repeatability** (identical environments), **version control** (audit
-> trail), **automation** (no manual clicks), **self-documentation**
-> (code IS the docs). Know all five by name.
-
-**Objective 1c — Multi-cloud and service-agnostic:**
-> Terraform manages AWS, Azure, GCP, Kubernetes, Datadog, GitHub and 3,000+
-> others through one workflow. Exam trap: "CloudFormation supports
-> multi-cloud" → **False**.
-
-**Common MCQ traps:**
-
-| Question | Answer | Why |
+| Demo concept / command | Exam objective | Notes |
 |---|---|---|
-| Should `.terraform.lock.hcl` be committed? | **Yes** | Locks exact provider versions + hashes |
-| Should `.terraform/` be committed? | **No** | Binary plugins, reproduced by init |
-| Should `terraform.tfstate` be committed? | **No** | Sensitive values, causes conflicts |
-| Does `terraform plan` make API calls? | **Yes** — Read() only | Reads current state, writes nothing |
-| Is `terraform apply` idempotent? | **Yes** | No changes if config matches state |
-| Does `map(string)` allow mixed value types? | **No** | All values must be strings |
+| Declarative vs imperative, idempotency | TA-004 Obj 1a — What is IaC | Exam frequently tests "apply twice, no changes" as the definition of idempotency |
+| Five advantages of IaC | TA-004 Obj 1b — Advantages of IaC | Know all five by name: consistency, repeatability, version control, automation, self-documentation |
+| Multi-cloud / 3,000+ providers | TA-004 Obj 1c — Multi-cloud and service-agnostic | Trap: "CloudFormation supports multi-cloud" is false — AWS only |
+| `terraform init` / `validate` / `fmt` / `plan` / `apply` / `destroy` | TA-004 Obj 3 — Core workflow | Know exactly what each command reads, writes, and whether it makes API calls |
+| `.terraform/`, `.terraform.lock.hcl`, `terraform.tfstate` | TA-004 Obj 2, 5 | Commit rules for each are a recurring exam trap — see Common Exam Traps below |
+| 8 top-level HCL block types, value types | TA-004 Obj 4 | Exam tests reading `.tf` snippets and identifying block type / value type |
+
+### Common Exam Traps
+
+| Scenario | What the task actually requires | Common wrong approach |
+|---|---|---|
+| "Should `.terraform.lock.hcl` be committed to version control?" | Yes — it locks exact provider version + SHA256 hash, guaranteeing reproducible installs | Assuming it's a generated/throwaway file like `.terraform/` and excluding it |
+| "You run `terraform apply` with no config changes. What happens?" | Plan shows 0 to add/change/destroy; no API calls made — this is idempotency | Assuming `apply` always makes at least a refresh-related change |
+| "Does `terraform plan` make any API calls?" | Yes — `Read()` only, to check actual current state; writes nothing | Assuming `plan` is fully offline/local-only |
+| "Can `map(string)` hold values of different types?" | No — every value must be a string; use `object({...})` for mixed types | Treating `map` and `object` as interchangeable |
+| "Does CloudFormation support multi-cloud like Terraform?" | No — CloudFormation is AWS-only; Terraform supports 3,000+ providers | Assuming all major IaC tools are multi-cloud by default |
+
+### Exam Task — Write a complete configuration
+
+**Task:** Write a Terraform configuration that declares a `random_string` resource (6 lowercase alphanumeric characters, no special characters) and a `local_file` resource whose filename incorporates that random string, with an output exposing the generated filename.
+
+**Block types required:** `terraform`, `variable`, `locals`, `resource`, `output`
+
+**Official documentation:**
+- [`random_string` resource](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/string)
+- [Local Values (`locals`)](https://developer.hashicorp.com/terraform/language/values/locals)
+
+**What to practise:**
+1. Open the `random_string` registry page — check the Argument Reference for `length`, `upper`, `special`, `numeric`
+2. Write the configuration from scratch without looking at this demo's `src/` files
+3. Validate: `terraform init && terraform validate`
+
+<details>
+<summary>Reference solution (open only after attempting)</summary>
+
+```hcl
+terraform {
+  required_version = "~> 1.15.0"
+  required_providers {
+    random = { source = "hashicorp/random", version = "~> 3.9.0" }
+    local  = { source = "hashicorp/local",  version = "~> 2.9.0" }
+  }
+}
+
+variable "project_name" {
+  type    = string
+  default = "cloudnova"
+}
+
+resource "random_string" "suffix" {
+  length  = 6      # required — no default
+  upper   = false  # lowercase only
+  special = false  # no special characters
+  numeric = true
+}
+
+locals {
+  filename = "${var.project_name}-${random_string.suffix.result}.txt"
+}
+
+resource "local_file" "report" {
+  filename = "${path.module}/output/${local.filename}"
+  content  = "Generated by Terraform"
+}
+
+output "generated_filename" {
+  value = local_file.report.filename
+}
+```
+
+**Arguments you must know without looking up:**
+- `length` on `random_string` — required, no default; exam tests whether you know it's mandatory
+- `upper` / `special` / `numeric` — all default to `true` in the provider; this demo explicitly sets `upper = false` and `special = false`
+
+</details>
 
 ---
 
@@ -2064,6 +2161,18 @@ provider name. Fix: `random_string.id.result`
 
 </details>
 
+**Cleanup:**
+
+```bash
+# Still inside src/break-fix/
+terraform destroy -auto-approve
+rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup
+
+# Verify — clean state
+ls -la
+# Only broken.tf should remain
+```
+
 ---
 
 ## Interview Prep
@@ -2159,7 +2268,7 @@ and the Console verification workflow.
 #deck:Terraform AWS Mastery::Phase 1 - Foundations::00-tf-hcl-basics
 #separator:Comma
 #columns:Front,Back,Tags
-"You run terraform apply on a config that already matches current infrastructure. What happens and why?","Plan shows 0 to add, 0 to change, 0 to destroy. No API calls made. Terraform compares desired state (.tf files) against current state (.tfstate), finds no diff, takes no action. This is idempotency — applying the same desired state twice produces the same result as once.","demo00,idempotency,workflow,ta004-obj1"
+"You run terraform apply on a config that already matches current infrastructure. What happens and why?","Plan shows 0 to add, 0 to change, 0 to destroy. No API calls made. Terraform compares desired state (.tf files) against current state (.tfstate), finds no diff, takes no action. This is idempotency — applying the same desired state twice produces the same result as once.","demo00,idempotency,workflow,ta004-obj1,needs-verification"
 "A team member manually tweaks a server config at 2am to fix an incident. Nobody updates the runbook. Six months later, staging and prod have different configs. What is this called and what is the root cause?","This is DRIFT — environments diverging silently over time. Root cause: manual changes made outside version control with no audit trail. IaC prevents this by requiring all changes to go through code review and automated apply.","demo00,drift,ta004-obj1"
 "Name the four failure modes of manual Console-based infrastructure management.","1. Drift — environments diverge silently. 2. No audit trail — cannot answer who changed what and when. 3. Not repeatable — recreating environments requires clicking screens again. 4. Bus factor — knowledge leaves when the person does.","demo00,iac-concepts,ta004-obj1"
 "Should .terraform.lock.hcl be committed to version control? Why?","YES. Records exact provider version AND SHA256 hash of downloaded binary. Without it: Engineer A gets provider v2.9.0, Engineer B gets v2.9.1 released yesterday with a breaking bug. Plans differ for identical configs.","demo00,lockfile,best-practices,ta004-obj2"
@@ -2168,11 +2277,11 @@ and the Console verification workflow.
 "What is the difference between declarative and imperative IaC?","Declarative: describe WHAT end state you want — Terraform figures out the steps. Idempotent: run twice and nothing changes. Imperative: describe HOW to get there — every step and existence check. Run twice: error if resource already exists. Examples: bash scripts, Python boto3.","demo00,iac-concepts,ta004-obj1"
 "Name the 5 advantages of IaC the TA-004 exam tests.","1. Consistency — no configuration drift. 2. Repeatability — identical environments every time. 3. Version control — full audit trail in Git. 4. Automation — no manual clicks. 5. Self-documentation — the code IS the documentation.","demo00,iac-concepts,ta004-obj1b"
 "Does CloudFormation support multi-cloud? Does Terraform?","CloudFormation: NO — AWS only. Terraform: YES — AWS, Azure, GCP, Kubernetes, Datadog, GitHub and 3000+ providers through the same workflow and HCL syntax.","demo00,tool-comparison,ta004-obj1c"
-"What does terraform init do to the filesystem? Name all 3 effects.","1. Downloads provider plugins → .terraform/providers/. 2. Creates or updates .terraform.lock.hcl with exact versions and SHA256 hashes. 3. Initialises the backend (local by default).","demo00,workflow,init,ta004-obj3"
-"What does terraform plan do? Does it change any infrastructure?","Reads .tf files (desired state), reads .tfstate (last known state), calls provider Read() API (actual state), calculates diff, prints execution plan. Makes ZERO changes to infrastructure or state. Always review before applying.","demo00,workflow,plan,ta004-obj3"
+"What does terraform init do to the filesystem? Name all 3 effects.","1. Downloads provider plugins → .terraform/providers/. 2. Creates or updates .terraform.lock.hcl with exact versions and SHA256 hashes. 3. Initialises the backend (local by default).","demo00,workflow,init,ta004-obj3,live-verified"
+"What does terraform plan do? Does it change any infrastructure?","Reads .tf files (desired state), reads .tfstate (last known state), calls provider Read() API (actual state), calculates diff, prints execution plan. Makes ZERO changes to infrastructure or state. Always review before applying.","demo00,workflow,plan,ta004-obj3,needs-verification"
 "What do the plan symbols +, ~, -, -/+ mean?","+ create: does not exist, will be created. ~ update in-place: exists, arguments change without replacement. - destroy: exists, will be deleted. -/+ replace: argument change forces destroy then recreate.","demo00,workflow,plan,ta004-obj3"
 "What does (known after apply) mean in a terraform plan output?","The value cannot be determined until the resource is created. Example: EC2 public IP — AWS assigns it at creation time. Terraform shows this placeholder in the plan.","demo00,workflow,plan,ta004-obj3"
-"What does terraform plan -out=tfplan + terraform apply tfplan guarantee?","apply tfplan executes the exact binary snapshot from plan time — does NOT re-read .tf files. Edits made after planning are silently ignored. In CI/CD: plan on PR open (human reviews), apply on merge (executes exactly what was reviewed).","demo00,workflow,plan,best-practices"
+"What does terraform plan -out=tfplan + terraform apply tfplan guarantee?","apply tfplan executes the exact binary snapshot from plan time — does NOT re-read .tf files. Edits made after planning are silently ignored. In CI/CD: plan on PR open (human reviews), apply on merge (executes exactly what was reviewed).","demo00,workflow,plan,best-practices,needs-verification"
 "What is the difference between variable and locals in Terraform?","variable: accepts INPUT from outside — tfvars, CLI flags, env vars, or default. Reference: var.name. locals: computed values inside the config. Accept NO external input. Reference: local.name. Block is plural (locals {}), reference is singular (local.x).","demo00,hcl,variables,ta004-obj4"
 "What is the difference between map(string) and object({...}) in HCL?","map(string): arbitrary key-value pairs where ALL values must be strings. Keys not predefined. Good for tags. object({...}): FIXED schema where each key has its own type. Good for structured config with mixed types.","demo00,hcl,types,ta004-obj4"
 "What type is list(object({name=string, cidr=string}))? Give a use case.","A list of objects — each element is a structured record with fixed schema. Used for subnet definitions, ECS container definitions, DB replica configs. Access: var.subnets[0].cidr","demo00,hcl,types,ta004-obj4"
@@ -2182,14 +2291,14 @@ and the Console verification workflow.
 "Fix this validation block: condition = contains(['dev','prod'], env)","Two errors: (1) Single quotes invalid in HCL — must use double quotes. (2) env is not a valid reference — must use var.env. Correct: condition = contains([\"dev\", \"prod\"], var.env)","demo00,hcl,validation,break-fix"
 "Fix this argument: upper = False","HCL booleans are always lowercase. False with capital F is invalid HCL. Fix: upper = false","demo00,hcl,types,break-fix"
 "Fix this output value reference: ${random.id.result}","random is a provider name, not a resource type. Resource attribute references require the full resource TYPE. Fix: random_string.id.result — format is resource_type.local_name.attribute","demo00,hcl,references,break-fix"
-"What does terraform fmt do and when should you run it?","Auto-formats .tf files to canonical style: 2-space indent, aligned = signs, consistent spacing. Run before every git commit. terraform fmt -check exits non-zero if files need formatting (use in CI).","demo00,workflow,fmt,ta004-obj3"
+"What does terraform fmt do and when should you run it?","Auto-formats .tf files to canonical style: 2-space indent, aligned = signs, consistent spacing. Run before every git commit. terraform fmt -check exits non-zero if files need formatting (use in CI).","demo00,workflow,fmt,ta004-obj3,live-verified"
 "What is the Terraform Registry?","registry.terraform.io — public repository of providers and modules. terraform init downloads providers from here. URL format: registry.terraform.io/namespace/provider. Example: registry.terraform.io/hashicorp/aws.","demo00,providers,registry,ta004-obj2"
 "What is the key difference between Terraform and OpenTofu?","Both use identical HCL syntax and workflow. Terraform: HashiCorp (IBM), BUSL 1.1 license, v1.15.5. OpenTofu: Linux Foundation fork, MPL 2.0 license, v1.11.6. Choose Terraform for cert prep. Choose OpenTofu only if org has a hard OSS license requirement.","demo00,terraform-vs-opentofu"
-"What happens to terraform.tfstate after terraform destroy?","The state file is NOT deleted. The resources array becomes empty. Serial number increments. The file remains on disk. Running terraform apply after destroy creates everything fresh.","demo00,state,destroy,ta004-obj5"
+"What happens to terraform.tfstate after terraform destroy?","The state file is NOT deleted. The resources array becomes empty. Serial number increments. The file remains on disk. Running terraform apply after destroy creates everything fresh.","demo00,state,destroy,ta004-obj5,live-verified"
 "What is path.module in Terraform?","Built-in reference that evaluates to the filesystem path of the directory containing the .tf file that uses it. Used to build relative file paths that work regardless of where terraform is run from.","demo00,hcl,references,ta004-obj4"
-"What are terraform.tfvars and *.auto.tfvars? When are they loaded?","terraform.tfvars: auto-loaded on every plan/apply — no flags needed. *.auto.tfvars: auto-loaded in lexical order. Any other .tfvars name requires -var-file=filename.tfvars. Precedence: default → TF_VAR_ → terraform.tfvars → *.auto.tfvars → -var-file → -var (last wins).","demo00,variables,tfvars,ta004-obj4"
-"When does random_string regenerate? How do you force it?","Generates once on first apply, stored in state, reused forever. Changes when: (1) config argument changes (length, special, etc.), (2) forced with: terraform apply -replace=random_string.suffix. Never use terraform taint — deprecated since v0.15.2.","demo00,random,replace"
-"What does <<EOT display mean in terraform output?","When an output value is a multi-line string (heredoc), the terminal shows it as <<EOT ... EOT. This is correct behaviour — Terraform's way of displaying multi-line strings. Not an error. Use terraform output -json to see it as a plain JSON string.","demo00,outputs,heredoc"
+"What are terraform.tfvars and *.auto.tfvars? When are they loaded?","terraform.tfvars: auto-loaded on every plan/apply — no flags needed. *.auto.tfvars: auto-loaded in lexical order. Any other .tfvars name requires -var-file=filename.tfvars. Precedence: default → TF_VAR_ → terraform.tfvars → *.auto.tfvars → -var-file → -var (last wins).","demo00,variables,tfvars,ta004-obj4,needs-verification"
+"When does random_string regenerate? How do you force it?","Generates once on first apply, stored in state, reused forever. Changes when: (1) config argument changes (length, special, etc.), (2) forced with: terraform apply -replace=random_string.suffix. Never use terraform taint — deprecated since v0.15.2.","demo00,random,replace,needs-verification"
+"What does <<EOT display mean in terraform output?","When an output value is a multi-line string (heredoc), the terminal shows it as <<EOT ... EOT. This is correct behaviour — Terraform's way of displaying multi-line strings. Not an error. Use terraform output -json to see it as a plain JSON string.","demo00,outputs,heredoc,needs-verification"
 "What is the difference between <<EOT and <<-EOT in HCL?","<<EOT: all leading whitespace preserved, closing EOT must be at column 0. <<-EOT: Terraform finds the least-indented line and strips that many spaces from all lines — closing EOT can be freely indented. Use <<-EOT in all HCL configs.","demo00,hcl,heredoc,ta004-obj4"
 "In HCL map(string) — what does the type in parentheses mean?","The type in parentheses is the VALUE type constraint. map(string) = every value must be a string. map(number) = every value must be a number. The keys are always strings in any map.","demo00,hcl,types,ta004-obj4"
 "What is the correct Terraform term for the second label in resource 'aws_s3_bucket' 'app_data'?","Local name (or just name) — not local variable. app_data is the local name. Local variable is reserved for locals {} block values referenced as local.x. The local name is used in attribute references: aws_s3_bucket.app_data.arn","demo00,hcl,terminology,ta004-obj4"
@@ -2201,11 +2310,12 @@ and the Console verification workflow.
 
 **00-tf-hcl-basics-quiz.md:**
 
-```
+````markdown
 # Quiz — Demo 00: IaC & HCL Foundations
 
-> TA-004 exam style. One correct answer unless stated otherwise.
-> Target: 80% or above before moving to Demo 01.
+> One correct answer per question unless stated otherwise.
+> Target: 80% or above before moving to Demo 05.
+> TA-004 exam style.
 
 ---
 
@@ -2409,8 +2519,8 @@ Score guide:
 
 | Score | Action |
 |---|---|
-| 10/10 | Proceed to Demo 01 |
-| 8-9/10 | Review wrong answers in Anki, then proceed |
-| 6-7/10 | Re-read relevant README sections, retry |
-| Below 6/10 | Re-read Demo 00 before proceeding |
-```
+| 10/10 | Import Anki cards, move to Demo 01 |
+| 9/10 | Review the wrong answer, then proceed |
+| 8/10 | Re-read the relevant section, retry those questions |
+| Below 8/10 | Re-read the full demo and redo the walkthrough before proceeding |
+````
