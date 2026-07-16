@@ -18,7 +18,7 @@ variable "environment" {
   default = "dev"
 
   validation {
-    condition     = contains(["dev", "staging"], var.environment) # Error 1
+    condition     = "dev"                             # Error 1
     error_message = "Must be dev, staging, or prod."
   }
 }
@@ -31,13 +31,13 @@ variable "retry_count" {
 variable "custom_role_name" {
   type     = string
   default  = "cloudnova-fallback-role"
-  nullable = false # Error 2 setup — see below
+  nullable = false                                     # Error 2 setup — see below
 }
 
 output "retry_as_string" {
-  value = var.retry_count + 50 # Error 3
+  value = var.retry_count + "extra"                     # Error 3
 }
 
 output "custom_role_name" {
-  value = var.custom_role_name # needed to observe Error 2
+  value = var.custom_role_name                          # needed to observe Error 2
 }

@@ -1,200 +1,280 @@
 # Quiz — Demo 05: Variables in Depth
 
-> One correct answer per question unless stated otherwise.
+> Question types: True/False, Multiple Choice (1 answer), Multiple
+> Answer (N answers, stated in the question) — matching the real
+> TA-004 exam format.
 > Target: 80% or above before moving to Demo 06.
-> TA-004 exam style.
 
 ---
 
-**Q1.** A variable is marked `sensitive = true`. Which statement is
-accurate?
+**Q1. (True/False)** A variable marked `sensitive = true` is encrypted
+when written to `terraform.tfstate`.
 
-A. The value is encrypted in `terraform.tfstate`
-B. The value is redacted from plan/apply terminal output but is still
-   written to `terraform.tfstate` in plaintext
-C. The value is never written to state or any file
-D. The value cannot be used in regular resource arguments
+- A) True
+- B) False
 
 <details>
 <summary>Answer</summary>
 
-**B.** `sensitive = true` only redacts from terminal output. State
-storage is plaintext regardless. **A** is wrong — nothing about
-`sensitive` triggers encryption; that requires a separately-encrypted
-backend. **C** is wrong — that's `ephemeral = true`'s behavior, not
-`sensitive`'s. **D** is wrong — sensitive values flow into regular
-resource arguments exactly like any other value; only `ephemeral`
-values have that restriction.
+**B) False.** `sensitive = true` only redacts the value from
+plan/apply terminal output and `terraform output` display. The value
+is still written to `terraform.tfstate` in plaintext — state security
+depends entirely on how the state itself is stored (encrypted backend,
+access control), not on this flag.
 
 </details>
 
 ---
 
-**Q2.** What is the variable value precedence order? Rank from highest
-to lowest: `TF_VAR_` environment variable, CLI `-var` flag, `default`
-value, `terraform.tfvars` file.
+**Q2. (Multiple Choice)** Which statement correctly distinguishes
+`sensitive = true` from `ephemeral = true` on a variable?
 
-A. `-var` > `TF_VAR_` > `terraform.tfvars` > `default`
-B. `terraform.tfvars` > `-var` > `TF_VAR_` > `default`
-C. `TF_VAR_` > `terraform.tfvars` > `-var` > `default`
-D. `default` > `terraform.tfvars` > `TF_VAR_` > `-var`
+- A) They behave identically — both are just different names for the same feature
+- B) `sensitive` redacts from output but is stored in state; `ephemeral` is never stored in state, plan files, or logs
+- C) `sensitive` is for strings only; `ephemeral` is for numbers only
+- D) `ephemeral` redacts from output but is stored in state; `sensitive` is never stored anywhere
 
 <details>
 <summary>Answer</summary>
 
-**A.** Full order: CLI `-var` > `-var-file` > `*.auto.tfvars` >
-`terraform.tfvars` > `TF_VAR_` > `default`. So `-var` is highest and
-`terraform.tfvars` actually outranks `TF_VAR_` (not the reverse). **B**
-is wrong — it puts `terraform.tfvars` above `-var`, but no file-based
-mechanism outranks the CLI flag. **C** is wrong — it places `TF_VAR_`
-above `terraform.tfvars`, reversing their actual order. **D** is wrong
-— it inverts the entire order, putting the lowest-precedence source
-first.
+**B.** This is the core distinction: `sensitive` hides the value from
+terminal/log output while still persisting it to state. `ephemeral`
+goes further — the value exists only in memory during plan/apply and
+is never written to state, saved plan files, or logs at all.
 
 </details>
 
 ---
 
-**Q3.** A `validation` block has `condition = "prod"` (a string literal).
+**Q3. (Multiple Choice)** A variable has `nullable = false` and
+`default = "dev"`. A caller runs `terraform apply -var="environment=null"`.
+What value does Terraform actually use?
+
+- A) `null`
+- B) `"dev"` — the default value
+- C) An empty string `""`
+- D) Terraform raises an error and refuses to proceed
+
+<details>
+<summary>Answer</summary>
+
+**B.** With `nullable = false`, an explicitly passed `null` is not
+allowed through — Terraform silently substitutes the `default` value
+instead. This is documented behavior, not an error. (`nullable = true`,
+the default, is what would let `null` override even with a default
+present.)
+
+</details>
+
+---
+
+**Q4. (Multiple Choice)** Inside a `variable` block's `validation`
+condition, which of the following can it legally reference?
+
+- A) Any other variable declared in the same configuration
+- B) Any resource already applied in a previous run
+- C) Only `var.<this variable>` — the variable the block belongs to
+- D) `local` values computed elsewhere in the configuration
+
+<details>
+<summary>Answer</summary>
+
+**C.** A `validation` condition can only reference the variable it
+belongs to. Validation runs during variable resolution, before other
+variables are guaranteed resolved and before any resources exist —
+referencing anything else is out of scope by design.
+
+</details>
+
+---
+
+**Q5. (Multiple Choice)** Rank the variable value precedence order from
+**highest** to **lowest**: CLI `-var` flag, `TF_VAR_` environment
+variable, `terraform.tfvars`, `default` value.
+
+- A) `-var` > `terraform.tfvars` > `TF_VAR_` > `default`
+- B) `TF_VAR_` > `-var` > `terraform.tfvars` > `default`
+- C) `terraform.tfvars` > `-var` > `TF_VAR_` > `default`
+- D) `default` > `TF_VAR_` > `terraform.tfvars` > `-var`
+
+<details>
+<summary>Answer</summary>
+
+**A.** Full order, highest to lowest: CLI `-var` > `-var-file` >
+`*.auto.tfvars` > `terraform.tfvars` > `TF_VAR_` environment variable >
+`default`. The CLI flag always wins; the default is always the last
+resort.
+
+</details>
+
+---
+
+**Q6. (True/False)** HCL provides an `if` statement for writing
+conditional logic directly, similar to most general-purpose programming
+languages.
+
+- A) True
+- B) False
+
+<details>
+<summary>Answer</summary>
+
+**B) False.** HCL has no `if` statement of any kind. The conditional
+operator (`condition ? true_val : false_val`) is the only conditional
+mechanism in the language — for values, expressions, and (via
+`count = var.create ? 1 : 0`) even conditional resource creation.
+
+</details>
+
+---
+
+**Q7. (Multiple Choice)** `var.retry_count` is declared `type = number`.
+What happens when a configuration evaluates `var.retry_count + "extra"`?
+
+- A) Terraform coerces `"extra"` to `0` before adding
+- B) Terraform concatenates the two into a single string
+- C) Terraform raises an error — `+` requires both operands to be numbers
+- D) Terraform silently ignores the string operand
+
+<details>
+<summary>Answer</summary>
+
+**C.** The `+` operator is strictly arithmetic and requires both sides
+to be numbers — Terraform never silently coerces a non-numeric string
+to `0` or drops it. Combining a number into a descriptive string
+requires interpolation instead: `"${var.retry_count} extra"`.
+
+</details>
+
+---
+
+**Q8. (Multiple Choice)** What is the purpose of wrapping `regex()` in
+`can()` inside a `validation` block, as in `can(regex("^[a-z]+$", var.name))`?
+
+- A) `can()` makes the regex pattern case-insensitive
+- B) `regex()` errors on no match rather than returning `false`; `can()` converts that error into a boolean the condition can use
+- C) `can()` is required syntax for all functions used inside `validation` blocks
+- D) `can()` improves the performance of the regex match
+
+<details>
+<summary>Answer</summary>
+
+**B.** `regex()` alone throws an error when the pattern doesn't match —
+it never returns `false`. `can()` catches that error and converts it
+into `false`, which is exactly what a `validation` block's `condition`
+needs (a boolean). Without `can()`, non-matching input would cause
+`terraform validate` to fail with an unhandled error instead of
+cleanly reporting the custom `error_message`.
+
+</details>
+
+---
+
+**Q9. (Multiple Choice)** What does `alltrue([])` — called on an empty
+list — return?
+
+- A) `false`
+- B) `true`
+- C) An error, since there are no elements to evaluate
+- D) `null`
+
+<details>
+<summary>Answer</summary>
+
+**B.** `alltrue()` returns `true` if every element in the list is
+`true` — and an empty list satisfies that vacuously, since there are no
+`false` elements to violate the condition. This is why
+`alltrue([for x in var.list : ...])` validations pass cleanly when the
+list happens to be empty.
+
+</details>
+
+---
+
+**Q10. (Multiple Answer — Pick the 2 correct responses)** Which TWO of
+the following are valid contexts for a value marked `ephemeral = true`
+to actually be used?
+
+- A) A regular `resource` argument
+- B) An `ephemeral = true` output block in a **child module**
+- C) A `write_only` resource argument (Terraform 1.10+)
+- D) A `local` value for later reuse elsewhere in the configuration
+- E) An `ephemeral = true` output block in the **root module**
+
+<details>
+<summary>Answer</summary>
+
+**B and C.** These are the only two ephemeral contexts. A regular
+resource argument (A) requires Terraform to store the value in state
+for drift detection — exactly what `ephemeral` forbids. Storing it in a
+`local` (D) doesn't create an ephemeral context either. A root-module
+ephemeral output (E) is specifically disallowed — ephemeral outputs are
+restricted to child modules, since a root module's outputs are the
+final result of `apply` with nothing downstream to honor the guarantee.
+
+</details>
+
+---
+
+**Q11. (Multiple Choice)** Which type constraint correctly describes a
+value where every key must be present, is known in advance, and
+different keys may hold different value types?
+
+- A) `map(string)`
+- B) `list(any)`
+- C) `object({ name = string, count = number })`
+- D) `set(string)`
+
+<details>
+<summary>Answer</summary>
+
+**C.** `object({...})` is exactly this: a fixed, known set of named
+fields, each independently typed. `map(type)` (A) requires all values
+to share the same type and allows arbitrary/dynamic keys. `list` (B)
+and `set` (D) are both homogeneous, ordered/unordered collections —
+neither has named fields at all.
+
+</details>
+
+---
+
+**Q12. (Multiple Choice)** Which argument is **required** when
+declaring an `aws_iam_role` resource?
+
+- A) `tags`
+- B) `assume_role_policy`
+- C) `max_session_duration`
+- D) `path`
+
+<details>
+<summary>Answer</summary>
+
+**B.** `assume_role_policy` — the JSON trust policy defining who is
+allowed to assume the role — is the only required argument.
+`max_session_duration`, `path`, and `tags` are all optional, each with
+sensible defaults (`3600`, `"/"`, and none, respectively).
+
+</details>
+
+---
+
+**Q13. (Multiple Choice)** A `validation` block is written as
+`condition = "prod"` — a string literal instead of a boolean expression.
 What happens?
 
-A. Passes — non-empty strings are truthy in Terraform
-B. Errors at `terraform validate` — condition must return a boolean
-C. The validation is silently ignored
-D. Errors only at `apply` time, not `validate`
+- A) Passes — any non-empty string is treated as truthy
+- B) Terraform raises an error at `terraform validate` — a `condition` must evaluate to a boolean
+- C) The validation block is silently ignored
+- D) It only errors at `apply` time, not at `validate`
 
 <details>
 <summary>Answer</summary>
 
 **B.** A `validation` block's `condition` must evaluate to `true` or
-`false`. `terraform validate` errors immediately. **A** is wrong —
-Terraform has no "truthy string" concept; a condition must be an
-actual boolean expression, not a non-empty string. **C** is wrong —
-validation is never silently skipped; an invalid condition type is
-itself an error. **D** is wrong — this is a `validate`-time error,
-before any API call, not something that waits until `apply`.
-
-</details>
-
----
-
-**Q4.** A variable has `nullable = false` and `default = "dev"`. A
-caller passes `-var="environment=null"`. What value is actually used?
-
-A. `null`
-B. `"dev"` — the default, since nullable = false substitutes it for null input
-C. An empty string
-D. An error is raised
-
-<details>
-<summary>Answer</summary>
-
-**B.** With `nullable = false`, passing `null` causes Terraform to
-substitute the `default` value instead — no error, no `null` value
-used. **A** is wrong — that's the `nullable = true` (default) behavior,
-where an explicit `null` does override. **C** is wrong — Terraform
-never silently converts `null` to an empty string; it either becomes
-`null` (`nullable = true`) or falls back to `default` (`nullable =
-false`). **D** is wrong — this is a deliberate, documented substitution
-behavior, not an error condition.
-
-</details>
-
----
-
-**Q5.** What does `alltrue([])` (an empty list) return?
-
-A. `false` — an empty list has no true elements
-B. `true` — vacuously true, no false elements exist to fail the check
-C. An error — `alltrue()` requires at least one element
-D. `null`
-
-<details>
-<summary>Answer</summary>
-
-**B.** `alltrue([])` returns `true`. This is why validation conditions
-using `alltrue([for x in var.list : ...])` pass when the list is empty
-— there's nothing to violate the condition. **A** is wrong — it
-reflects an intuitive but incorrect assumption; "all elements are true"
-is vacuously satisfied by an empty set, the same logical principle as
-an empty list satisfying a universally-quantified statement. **C** is
-wrong — `alltrue()` doesn't require any minimum element count. **D** is
-wrong — the function always returns a boolean, never `null`.
-
-</details>
-
----
-
-**Q6.** `var.retry_count` is `type = number`. What happens when you
-write `var.retry_count + "extra"`?
-
-A. Terraform coerces `"extra"` to `0` and adds it
-B. Terraform concatenates them into a string
-C. Terraform errors — `+` requires both operands to be numbers
-D. Terraform silently drops the string
-
-<details>
-<summary>Answer</summary>
-
-**C.** The `+` operator requires both sides to be numbers. Combining a
-number into a descriptive string requires interpolation instead:
-`"${var.retry_count} extra"`. **A** is wrong — Terraform never coerces
-a non-numeric string to `0`; it errors instead of silently guessing.
-**B** is wrong — that's what string interpolation does, not the `+`
-operator, which is strictly arithmetic. **D** is wrong — there's no
-silent-drop behavior anywhere in Terraform's type system; type
-mismatches are errors, not warnings.
-
-</details>
-
----
-
-**Q7.** Which is the correct idiomatic pattern for validating a string
-against a regex pattern inside a `validation` block?
-
-A. `condition = regex("^[a-z]+$", var.name)`
-B. `condition = can(regex("^[a-z]+$", var.name))`
-C. `condition = var.name == regex("^[a-z]+$", var.name)`
-D. Both A and B work identically
-
-<details>
-<summary>Answer</summary>
-
-**B.** `regex()` alone errors when there's no match (it doesn't return
-`false`) — `can()` converts that error into a boolean `false`, which is
-what a `condition` requires. **A** is wrong — this is exactly the trap:
-`regex()` without `can()` would cause `terraform validate` to error on
-any non-matching input instead of cleanly failing the validation with
-the custom `error_message`. **C** is wrong — comparing a string to
-whatever `regex()` returns (which errors on no match, or a substring on
-match) is not a meaningful boolean condition. **D** is wrong precisely
-because A does not work identically to B — A errors uncontrolled, B
-fails validation cleanly.
-
-</details>
-
----
-
-**Q8.** A variable is `ephemeral = true`. Which of the following is a
-valid use of its value?
-
-A. Passing it directly to a regular `resource` argument
-B. Passing it to a `write_only` resource argument (1.10+)
-C. Storing it in a `local` for later reuse across the config
-D. Referencing it in a non-ephemeral output
-
-<details>
-<summary>Answer</summary>
-
-**B.** `write_only` resource arguments are one of exactly two valid
-ephemeral contexts (the other being a child-module ephemeral output).
-**A** is wrong — regular resource arguments require Terraform to store
-the value in state for drift detection, which is exactly what
-`ephemeral` forbids. **C** is wrong — locals aren't an ephemeral
-context; assigning an ephemeral value to a local doesn't make it safe
-to store. **D** is wrong — a non-ephemeral output would itself write
-the value to state, defeating the entire purpose of marking the
-variable ephemeral.
+`false` — nothing else is valid, and `terraform validate` catches this
+immediately. Terraform has no "truthy string" concept the way some
+scripting languages do; a condition has to be a genuine boolean
+expression, not just a non-empty value.
 
 </details>
 
@@ -204,7 +284,7 @@ Score guide:
 
 | Score | Action |
 |---|---|
-| 8/8 | Import Anki cards, move to Demo 06 |
-| 7/8 | Review the wrong answer, then proceed |
-| 6/8 | Re-read the relevant section, retry those questions |
-| Below 6/8 | Re-read the full demo and redo the walkthrough before proceeding |
+| 12-13/13 | Import Anki cards, move to Demo 06 |
+| 10-11/13 | Review the wrong answers, then proceed |
+| 8-9/13 | Re-read the relevant sections, retry those questions |
+| Below 8/13 | Re-read the full demo and redo the walkthrough before proceeding |
