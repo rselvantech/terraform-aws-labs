@@ -315,6 +315,18 @@ count = var.create_role ? 1 : 0
 > a conditional expression. For conditional resource creation, use
 > `count = var.create ? 1 : 0` (covered in Demo 10).
 
+**What `count = var.create_role ? 1 : 0` actually does:** `count` on a
+resource block tells Terraform how many instances to create. Instead of
+a fixed number, this feeds it the *result* of a conditional expression
+— `1` if `var.create_role` is `true`, `0` if it's `false`. A resource
+with `count = 0` is not created at all (Terraform sees zero instances
+to manage); `count = 1` creates exactly one, addressed as
+`resource_type.name[0]`. This is how Terraform expresses "create this
+resource, but only if X is true" — there's no other mechanism for
+conditional resource creation. The full mechanics of `count` (indexing,
+addressing, the reordering trap) are Demo 10's focus; this is only the
+`?:` piece that makes the condition itself possible.
+
 ---
 
 #### String Interpolation
@@ -555,6 +567,30 @@ alltrue([for id in var.trusted_account_ids : can(regex("^[0-9]{12}$", id))])
 > **`toset()` deduplicates and loses order.** If you need to deduplicate
 > while preserving order, use `distinct(list)` (covered in Demo 09).
 
+**What happens when a type conversion fails:**
+
+```hcl
+tonumber("abc")   # ERROR — "abc" cannot be converted to a number
+tobool("yes")     # ERROR — only exact "true"/"false" convert; "yes" does not
+tonumber("42")    # 42 — succeeds, "42" is a valid numeric string
+```
+
+```
+Error: Invalid function argument
+  Invalid value for "v" parameter: cannot convert "abc" to number:
+  a number is required.
+```
+
+> ⚠️ Simulated expected output — not from a live terminal run in this
+> environment.
+
+Type conversion functions **error immediately**, the same way `regex()`
+does on no match — they never silently return `0`, `false`, or `null`
+on a failed conversion. If you need to attempt a conversion that might
+fail and fall back to a default instead of erroring, wrap it in
+`try()`: `try(tonumber(var.port_string), 8080)` — covered in full in
+Demo 06, since `try()` is a Demo 06 construct, not a Demo 05 one.
+
 ---
 
 ### Variable Types — Full Reference
@@ -599,6 +635,40 @@ mixed types, use `object` or `tuple`.
 | `object({...})` | `object({ name = string, count = number })` | Fixed named fields, each typed independently. Fields are required unless marked `optional()`. |
 | `tuple([...])` | `tuple([string, number, bool])` | Fixed-length, positional, mixed-type. Rarely used — `object` is more readable. |
 | `any` | `any` | Disables type checking. Use as a last resort. |
+
+**Tuple vs. list vs. set — and why tuple needs no conversion function:**
+
+Unlike `set` (which has no literal syntax at all — you must write a
+list and convert with `toset()`), a **tuple has ordinary list literal
+syntax**. Write a list literal with mixed types, and Terraform infers
+it as a tuple automatically — there's no `totuple()` function because
+none is needed:
+
+```hcl
+["us-east-2", 3, true]
+# Terraform infers this as tuple([string, number, bool]) automatically
+# — mixed types in a single [...] literal always produce a tuple,
+# never a list, because list requires homogeneous elements.
+
+["us-east-2", "us-west-2"]
+# All elements the same type (string) — Terraform infers list(string)
+# here instead, since nothing forces tuple inference when types match.
+```
+
+| | `list(type)` | `set(type)` | `tuple([...])` |
+|---|---|---|---|
+| Element types | All the same | All the same | Can differ per position |
+| Literal syntax | `["a", "b"]` | None — must `toset([...])` | `["a", 1, true]` — ordinary list literal, inferred automatically |
+| Access by index | Yes | No | Yes |
+| Duplicates allowed | Yes | No | Yes |
+| Typical use | Ordered, uniform values | Deduplicated, unordered values | A small, fixed-shape group of mixed-type values (rare — `object` is usually clearer) |
+
+> **In practice, you rarely write `tuple([...])` as an explicit type
+> constraint.** Terraform infers it automatically the moment a list
+> literal has mixed element types — the explicit `tuple([string,
+> number, bool])` syntax mainly shows up when you need to *constrain*
+> a variable's input to a specific tuple shape, not when just writing
+> an inline value.
 
 **`optional()` inside `object()` — marking fields as optional:**
 
@@ -669,13 +739,10 @@ variable "deploy_token" {
 
 #### `ephemeral = true` — Never Written to State (Terraform 1.10+)
 
-**Ephemeral context** — a location where Terraform explicitly
-guarantees a value will not be persisted to state. Currently two
-qualify: (1) an `ephemeral = true` output block in a **child module**
-(not a root module — Demo 07 covers this restriction), and (2) a
-`write_only` resource argument (Terraform 1.10+, covered in a later
-demo). A regular resource argument does **not** qualify — Terraform
-must store it in state for drift detection.
+`ephemeral = true` marks a variable's value as something Terraform
+should never write down anywhere — not in `terraform.tfstate`, not in
+a saved plan file, not anywhere persistent. It only ever exists in
+memory, for the duration of the current `plan`/`apply`, then it's gone.
 
 ```hcl
 variable "deploy_token" {
@@ -686,20 +753,53 @@ variable "deploy_token" {
 
 When `ephemeral = true`: the value exists only in memory during
 plan/apply; it is never written to `terraform.tfstate`; it is never
-written to saved plan files (`-out`); it cannot be used in a regular
-resource argument.
+written to saved plan files (`-out`); it **cannot** be used in a
+regular resource argument (the error this produces is shown below).
 
 When `ephemeral = false` (the default): the value flows normally into
 resource arguments and is stored in state like any other value.
 
-Attempting to pass an ephemeral variable to a regular resource argument
-errors:
+**Can you output an ephemeral variable?** Yes — but only through an
+`ephemeral = true` output, and only in a **child module**, not a root
+module (every demo in this series so far has been a root module). This
+is one of exactly two valid destinations for an ephemeral value — the
+other is a `write_only` resource argument (Terraform 1.10+, covered in
+a later demo). A regular resource argument is neither. This series
+doesn't build child modules until later, so the output side isn't
+demonstrated working here — Demo 07 covers the restriction directly,
+including what error you get if you try it in a root module. For now,
+the practical takeaway is narrower: **in this demo, an ephemeral
+variable has nowhere valid to go except staying unused, or being
+consumed by something that doesn't persist it** — which is why
+`session_token` in this demo's lab is declared but deliberately never
+referenced in a resource argument.
+
+**Concrete example of the error** — this is what happens if you try to
+use `var.deploy_token` (ephemeral) directly on a resource:
+
+```hcl
+variable "deploy_token" {
+  type      = string
+  ephemeral = true
+}
+
+resource "aws_ssm_parameter" "example" {
+  name  = "/example/token"
+  type  = "SecureString"
+  value = var.deploy_token   # ERROR — see below
+}
+```
 
 ```
 Error: Ephemeral value not allowed
-  An ephemeral value cannot be used here — the value must be stored in
-  the Terraform state for use in future operations.
+  on 05-main.tf line 12, in resource "aws_ssm_parameter" "example":
+  12:   value = var.deploy_token
+  This argument does not allow ephemeral values, and the given value
+  is derived from an ephemeral value.
 ```
+
+> ⚠️ Simulated expected output — not from a live terminal run in this
+> environment.
 
 **`sensitive` vs `ephemeral` — the key distinction:**
 
@@ -767,7 +867,29 @@ variable "instance_count" {
 | `condition` | A boolean expression. The ONLY reference allowed is `var.<this_variable>`. Must return `true` or `false` — a string or number condition is itself a validation error. |
 | `error_message` | Shown when condition is false. Must be a non-empty string ending with a period. |
 
-**What validation can and cannot check:**
+**Can a `condition` reference another variable, or a `local`?** No to
+both. The *only* reference a `condition` may contain is
+`var.<this_variable>` — not any other variable, and not any `local`,
+even one that doesn't itself depend on a resource. This surprises
+people, since locals often feel like "just another value" — but
+locals are computed later in the evaluation order than variable
+validation (see the scopes list below), so they can't be referenced
+here regardless of what they depend on.
+
+**Can a `condition` reference a `resource` or `data` attribute?** No.
+Resources may not exist yet on a first `apply`, and `data` blocks
+require the provider to already be configured and an API call made —
+neither of those has happened yet at the point variable validation
+runs. Referencing either is out of scope for the same underlying
+reason as locals: validation happens too early in the evaluation order.
+
+**What happens when `condition` evaluates to `false`?** Terraform halts
+`plan` (or `apply`) immediately and displays `error_message` as a hard
+error — not a warning. No API call is made, no resource is touched.
+The `plan`/`apply` simply fails, and must be re-run with a valid value
+before anything proceeds.
+
+**What validation can and cannot check — worked examples:**
 
 ```hcl
 # VALID — tests this variable's own value
@@ -779,9 +901,54 @@ condition = var.max_session_duration >= 3600 && var.max_session_duration <= 4320
 # INVALID — references another variable (not in scope)
 condition = var.max_size > var.min_size        # ERROR: var.min_size not in scope
 
+# INVALID — references a local (not in scope, even though it looks harmless)
+condition = var.name == local.expected_name    # ERROR: local.expected_name not in scope
+
 # INVALID — references a resource (not in scope)
 condition = var.name != aws_s3_bucket.main.bucket  # ERROR: resources not in scope
 ```
+
+---
+
+**Terraform's evaluation order — "scopes," and where each is covered:**
+
+The reason validation's `condition` can only see `var.<this_variable>`
+makes more sense once you see the order Terraform actually resolves
+things in. Roughly, top to bottom:
+
+1. **Variable resolution + validation** (this demo) — every `variable`
+   block's value is determined (precedence order) and every
+   `validation` block runs, using only that one variable's own value
+2. **Provider configuration** — the `provider` block is configured,
+   using resolved variables
+3. **Locals** (Demo 06) — computed in dependency order, can reference
+   variables and (once computed) other locals
+4. **Data source reads** (Demo 08) — require the provider to be
+   configured; can reference variables and locals
+5. **Resource graph — plan, then apply** (ongoing since Demo 01; `count`/
+   `for_each` multiplicity in Demo 10) — resources are created/updated/
+   destroyed in dependency order, can reference variables, locals, and
+   data sources
+6. **Outputs** (Demo 07) — resolved last, can reference anything above
+
+A `validation` block's `condition` runs at step 1 — before steps 2–6
+exist in any form. That's the literal reason it can't see a resource
+(step 5, doesn't exist yet) or a local (step 3, hasn't run yet) — not
+a convention or a stylistic restriction, but a consequence of what
+information actually exists at that point in the evaluation order.
+
+**Concrete example — why `var.min_size`/`var.max_size` genuinely isn't
+available yet:** imagine Terraform tried to allow
+`condition = var.max_size > var.min_size` inside `min_size`'s own
+validation block. For this to work, Terraform would need `max_size`
+already resolved before it can validate `min_size` — but `max_size`'s
+own validation (if it had one referencing `min_size`) would have the
+identical problem in reverse. There's no guaranteed order to resolve
+this in, unlike locals or resources, which form an explicit dependency
+graph (DAG) precisely so Terraform *can* determine an order. Variables
+don't form a DAG with each other at all — each one's validation is
+self-contained by design, which sidesteps the ordering problem entirely
+rather than trying to solve it.
 
 > **Validation fires before any API call** — invalid inputs are rejected
 > during variable resolution, before Terraform contacts AWS. This is why
@@ -898,6 +1065,54 @@ to.
   role-specific permissions
 - **Managed (`aws_iam_policy` + `aws_iam_role_policy_attachment`):**
   attachable to multiple roles — use for shared permissions
+
+---
+
+**Closing the loop — how this role and policy actually get used:**
+
+Everything above defines the role and its permissions, but not *who
+uses it or when*. Here's the complete real-world sequence for
+CloudNova's CI/CD deploy role:
+
+1. **Trust policy decides *who can ask to become this role*.** The
+   `assume_role_policy` (built from `local.trust_policy` in this
+   demo's lab) lists the trusted principals — in this demo, the
+   current AWS account itself (self-trust, since no external accounts
+   were provided). In a real CI/CD setup, this is typically the CI/CD
+   platform's own AWS account or an OIDC identity provider (e.g.
+   GitHub Actions' OIDC provider), not a human user.
+
+2. **A CI/CD pipeline run calls `sts:AssumeRole`** against this role's
+   ARN (`role_arn`, this demo's output). AWS checks the trust policy —
+   is the calling identity one of the trusted principals? If yes, AWS
+   issues **temporary credentials** (access key, secret key, session
+   token) valid for up to `max_session_duration` seconds (this demo's
+   `3600`–`43200` range).
+
+3. **The pipeline uses those temporary credentials** — not the role
+   itself directly, and not any human's long-term credentials — to run
+   `terraform apply` (or any AWS CLI/SDK call). Every API call made
+   with those credentials is authorized against the role's **inline
+   permission policy** (`aws_iam_role_policy.deploy`, built from
+   `local.permission_policy`) — in this demo, `s3:GetObject`,
+   `s3:PutObject`, `s3:ListBucket` (`var.allowed_actions`).
+
+4. **When the session expires** (at `max_session_duration`), the
+   temporary credentials stop working — the pipeline must call
+   `sts:AssumeRole` again for the next run. Nothing about the role
+   itself needs to change; this is exactly why roles use temporary
+   credentials instead of an IAM user's permanent access keys — there's
+   no long-lived secret sitting in the pipeline's configuration to leak
+   or rotate.
+
+**Why two separate resources (role + inline policy) instead of one?**
+The trust policy (who can assume) and the permission policy (what they
+can do once assumed) are answering two entirely different questions.
+Keeping them as two Terraform resources mirrors how AWS itself treats
+them — `assume_role_policy` lives directly on the role; permissions
+are attached separately (inline here; via `aws_iam_policy` +
+`aws_iam_role_policy_attachment` if you needed the same permission set
+reused across multiple roles).
 
 ---
 
@@ -1240,9 +1455,11 @@ role_arn  = "arn:aws:iam::163125980376:role/cloudnova-dev-deploy-role"
 role_name = "cloudnova-dev-deploy-role"
 ```
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment. Role name, policy name, and account ID are derived from
-> default variable values and should match if defaults are unchanged.
+> ✅ Verified against a live run. `terraform fmt -recursive` reported
+> `break-fix/broken.tf` as reformatted (expected — that file is
+> intentionally malformed for Break-Fix below). Account ID shown here
+> is a placeholder — yours will differ, and `role_arn`/`role_name`
+> will match if defaults are unchanged.
 
 **Verify in Console:**
 
@@ -1274,6 +1491,14 @@ terraform plan | grep "cloudnova"
 
 Expected: `cloudnova-dev-deploy-role` — from `default = "dev"`.
 
+✅ Verified against a live run:
+```
+aws_iam_role.deploy: Refreshing state... [id=cloudnova-dev-deploy-role]
+aws_iam_role_policy.deploy: Refreshing state... [id=cloudnova-dev-deploy-role:cloudnova-dev-deploy-policy]
+
+No changes. Your infrastructure matches the configuration.
+```
+
 ### Step 2 — Level 5: `TF_VAR_` environment variable
 
 ```bash
@@ -1282,6 +1507,28 @@ terraform plan | grep "cloudnova"
 ```
 
 Expected: `cloudnova-staging-deploy-role` — env var overrides default.
+
+✅ Verified against a live run — the plan proposes replacing the role,
+since changing `environment` changes the computed `name` (a
+`name`-changing update forces replacement, not an in-place update):
+```
+  # aws_iam_role.deploy must be replaced
+-/+ resource "aws_iam_role" "deploy" {
+      ~ name = "cloudnova-dev-deploy-role" -> "cloudnova-staging-deploy-role" # forces replacement
+      ~ description = "CI/CD deploy role for cloudnova dev" -> "CI/CD deploy role for cloudnova staging"
+        # ...
+    }
+Plan: 2 to add, 0 to change, 2 to destroy.
+```
+
+> **`# forces replacement` is worth noticing here.** Changing the
+> `name` argument (derived from `environment`) can't be applied
+> in-place — AWS doesn't support renaming an IAM role via update, so
+> Terraform plans a destroy-then-create instead. This is a real,
+> general Terraform behavior (some argument changes update in place,
+> others force replacement), not something specific to precedence
+> testing — it just happens to be visible here because `environment`
+> feeds directly into `name`.
 
 ### Step 3 — Level 4: `terraform.tfvars` overrides `TF_VAR_`
 
@@ -1293,6 +1540,14 @@ terraform plan | grep "cloudnova"
 Expected: `cloudnova-prod-deploy-role` — `terraform.tfvars` overrides
 the `TF_VAR_environment=staging` env var.
 
+✅ Verified against a live run:
+```
+      ~ name = "cloudnova-dev-deploy-role" -> "cloudnova-prod-deploy-role" # forces replacement
+      ~ description = "CI/CD deploy role for cloudnova dev" -> "CI/CD deploy role for cloudnova prod"
+  ~ role_arn  = "arn:aws:iam::<account-id>:role/cloudnova-dev-deploy-role" -> (known after apply)
+  ~ role_name = "cloudnova-dev-deploy-role" -> "cloudnova-prod-deploy-role"
+```
+
 ### Step 4 — Level 3: `*.auto.tfvars` overrides `terraform.tfvars`
 
 ```bash
@@ -1303,7 +1558,31 @@ terraform plan | grep "cloudnova"
 Expected: `cloudnova-staging-deploy-role` — `.auto.tfvars` overrides
 `terraform.tfvars`.
 
-### Step 5 — Level 1: CLI `-var` flag overrides everything
+> **A wrong value here fails loudly, not silently.** If you type an
+> `environment` value outside `dev`/`staging`/`prod` into any of these
+> files, the `validation` block from `03-variables.tf` catches it
+> immediately: `terraform plan` fails with `Error: Invalid value for
+> variable` and the exact `error_message` you wrote — the same
+> validation Part C exercises deliberately, encountered here as a
+> genuine typo would trigger it.
+
+### Step 5 — Level 2: CLI `-var-file` overrides `*.auto.tfvars`
+
+This level is easy to overlook since `*.auto.tfvars` loads
+automatically and `-var-file` requires an explicit flag — but
+`-var-file` outranks it precisely because it's an explicit, deliberate
+CLI choice rather than something loaded by convention.
+
+```bash
+echo 'environment = "prod"' > env.tfvars
+terraform plan -var-file="env.tfvars" | grep "cloudnova"
+```
+
+Expected: `cloudnova-prod-deploy-role` — the explicit `-var-file` flag
+overrides `override.auto.tfvars`'s `"staging"`, even though both files
+are present simultaneously.
+
+### Step 6 — Level 1: CLI `-var` flag overrides everything
 
 ```bash
 terraform plan -var="environment=dev" | grep "cloudnova"
@@ -1312,14 +1591,17 @@ terraform plan -var="environment=dev" | grep "cloudnova"
 Expected: `cloudnova-dev-deploy-role` — CLI flag wins over all files
 and env vars.
 
-> ⚠️ Simulated expected output for all five commands above — not from a
-> live terminal run in this environment.
+✅ Verified against a live run — the full precedence chain in this
+walkthrough was demonstrated end-to-end: default (`dev`) → `TF_VAR_`
+(`staging`) → `terraform.tfvars` (`prod`) → `.auto.tfvars` (`staging`)
+→ `-var-file` (`prod`) → `-var` (`dev`) — each override winning over
+everything beneath it, exactly matching the documented order.
 
-### Step 6 — Clean up precedence artifacts
+### Step 7 — Clean up precedence artifacts
 
 ```bash
 unset TF_VAR_environment
-rm -f terraform.tfvars override.auto.tfvars
+rm -f terraform.tfvars override.auto.tfvars env.tfvars
 ```
 
 ---
@@ -1337,12 +1619,22 @@ output, still in state) and `ephemeral` (never in state at all).
 terraform plan -var="environment=qa"
 ```
 
-Expected:
+✅ Verified against a live run:
 
 ```
+Planning failed. Terraform encountered an error while generating this plan.
+
 ╷
 │ Error: Invalid value for variable
-│   environment must be dev, staging, or prod.
+│
+│   on 03-variables.tf line 28:
+│   28: variable "environment" {
+│     ├────────────────
+│     │ var.environment is "qa"
+│
+│ environment must be dev, staging, or prod.
+│
+│ This was checked by the validation rule at 03-variables.tf:34,3-13.
 ╵
 ```
 
@@ -1352,12 +1644,22 @@ Expected:
 terraform plan -var="max_session_duration=999"
 ```
 
-Expected:
+✅ Verified against a live run:
 
 ```
+Planning failed. Terraform encountered an error while generating this plan.
+
 ╷
 │ Error: Invalid value for variable
-│   max_session_duration must be between 3600 (1 hour) and 43200 (12 hours).
+│
+│   on 03-variables.tf line 105:
+│  105: variable "max_session_duration" {
+│     ├────────────────
+│     │ var.max_session_duration is 999
+│
+│ max_session_duration must be between 3600 (1 hour) and 43200 (12 hours).
+│
+│ This was checked by the validation rule at 03-variables.tf:110,3-13.
 ╵
 ```
 
@@ -1367,17 +1669,29 @@ Expected:
 terraform plan -var='trusted_account_ids=["not-an-id"]'
 ```
 
-Expected:
+✅ Verified against a live run:
 
 ```
+Planning failed. Terraform encountered an error while generating this plan.
+
 ╷
 │ Error: Invalid value for variable
-│   All trusted_account_ids must be 12-digit AWS account IDs.
+│
+│   on 03-variables.tf line 59:
+│   59: variable "trusted_account_ids" {
+│     ├────────────────
+│     │ var.trusted_account_ids is list of string with 1 element
+│
+│ All trusted_account_ids must be 12-digit AWS account IDs.
+│
+│ This was checked by the validation rule at 03-variables.tf:64,3-13.
 ╵
 ```
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
+> **Notice each error names the exact line and the actual value that
+> failed** (`var.environment is "qa"`, `var.max_session_duration is
+> 999`) — this is genuine `terraform plan` output, not a generic
+> message; Terraform always tells you specifically what it evaluated.
 
 > **All three errors appear before Terraform contacts AWS** — validation
 > fires during variable resolution.
@@ -1390,11 +1704,36 @@ Expected:
 terraform plan -var="external_secret_label=my-real-secret"
 ```
 
-Any reference to `var.external_secret_label` in plan output shows
-`(sensitive value)`. Confirm it IS in state in plaintext:
+✅ Verified against a live run:
+
+```
+No changes. Your infrastructure matches the configuration.
+```
+
+> **"No changes" is correct here, not a bug.** `external_secret_label`
+> is declared purely to demonstrate `sensitive` behavior — it isn't
+> actually wired into any resource argument in this demo's `.tf` files,
+> so changing its value has nothing downstream to affect. The
+> `sensitive` redaction behavior itself is confirmed by inspecting
+> state directly, not by watching a plan diff.
+
+Confirm the role's tags (a genuinely-used value) ARE in state in
+plaintext, as a general confirmation state stores actual values:
 
 ```bash
 terraform state pull | jq '.resources[] | select(.type=="aws_iam_role") | .instances[0].attributes.tags'
+```
+
+✅ Verified against a live run:
+
+```json
+{
+  "Demo": "05-variables-in-depth",
+  "Environment": "dev",
+  "ManagedBy": "Terraform",
+  "Owner": "platform-team",
+  "Project": "cloudnova"
+}
 ```
 
 ---
@@ -1405,17 +1744,41 @@ terraform state pull | jq '.resources[] | select(.type=="aws_iam_role") | .insta
 terraform apply -var="session_token=my-real-token"
 ```
 
+✅ Verified against a live run:
+
+```
+No changes. Your infrastructure matches the configuration.
+
+Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
+```
+
+> **`0 added, 0 changed` is expected here too** — `session_token`, like
+> `external_secret_label`, is declared to demonstrate `ephemeral`
+> behavior but isn't referenced in any resource argument (it can't be —
+> that's exactly what `ephemeral` restricts). Nothing about applying it
+> should change any real resource.
+
 Confirm `session_token` is NOT in state:
 
 ```bash
 terraform state pull | jq '.' | grep -i "session"
 ```
 
-Expected: no output — `session_token` was in memory during apply and
-discarded immediately after. It was never written to state.
+✅ Verified against a live run:
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
+```
+            "max_session_duration": 3600,
+      "config_addr": "var.max_session_duration",
+          "object_addr": "var.max_session_duration",
+```
+
+> **This is NOT a failed check — read the matches carefully.** Every
+> line matched is `max_session_duration` (a real, stored variable) —
+> the substring `"session"` inside it is what `grep -i session` picked
+> up. `session_token` itself appears **nowhere** in this output. If
+> `session_token` had been written to state, you'd see a line
+> containing that exact name — its total absence, even as a substring
+> match, is the actual confirmation that `ephemeral = true` worked.
 
 ---
 
@@ -1436,8 +1799,7 @@ aws_iam_role.deploy: Destruction complete after 2s
 Destroy complete! Resources: 2 destroyed.
 ```
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
+> ✅ Verified against a live run.
 
 ```
 Console → IAM → Roles → cloudnova-dev-deploy-role: GONE ✅
@@ -1445,7 +1807,7 @@ Console → IAM → Roles → cloudnova-dev-deploy-role: GONE ✅
 
 ```bash
 unset TF_VAR_environment
-rm -f terraform.tfvars override.auto.tfvars
+rm -f terraform.tfvars override.auto.tfvars env.tfvars
 ```
 
 ---
@@ -1463,13 +1825,12 @@ rm -f terraform.tfvars override.auto.tfvars
    the only conditional mechanism; arithmetic (`+` `-` `*` `/` `%`),
    relational (`==` `!=` `<` `>` `<=` `>=`), and logical (`&&` `||`
    `!`) operators work as in other languages
-4. ✅ `can(regex(...))` is the idiomatic validation pattern — `regex()`
-   errors on no match, `can()` converts that error to `false`
-5. ✅ `contains()` tests membership; `length()` counts elements;
-   `alltrue()` tests every element — `alltrue([])` returns `true`
-6. ✅ Collection types (`list`, `set`, `map`) require homogeneous
-   elements; `object` allows mixed types with fixed named fields. Sets
-   have no literal syntax — use `toset([...])`
+4. ✅ `can(regex(...))` is the idiomatic validation pattern (`regex()`
+   errors on no match, `can()` converts that to `false`); `contains()`,
+   `length()`, and `alltrue()` (vacuously `true` on an empty list) round
+   out the function set — and `toset()`/`tolist()`/`tostring()`/`tonumber()`
+   convert between collection types (`list`/`set`/`map` require
+   homogeneous elements, `object` allows mixed types)
 
 ---
 
@@ -1633,10 +1994,22 @@ variable "custom_role_name" {
 output "retry_as_string" {
   value = var.retry_count + "extra"                     # Error 3
 }
+
+output "custom_role_name" {
+  value = var.custom_role_name                          # needed to observe Error 2
+}
 ```
 
 ```bash
+# Step A — the CLI -var attempt (what most learners try first)
 terraform plan -var="custom_role_name=null"
+
+# Step B — the actual nullable=false repro, via a tfvars file
+cat > null.tfvars <<'EOF'
+custom_role_name = null
+EOF
+
+terraform plan -var-file="null.tfvars"
 ```
 
 <details>
@@ -1650,19 +2023,40 @@ true or false." Fix:
 condition = contains(["dev", "staging", "prod"], var.environment)
 ```
 
-**Error 2 — misunderstanding `nullable = false` with `-var="custom_role_name=null"`**
-A learner expects `-var="custom_role_name=null"` to set the role name
-to `null`, planning to check for `null` downstream and use a computed
-fallback. But `custom_role_name` has `nullable = false` — when `null` is
-passed, Terraform substitutes the `default` ("cloudnova-fallback-role")
-instead of ever letting `null` through. There is no error here — the
-"bug" is the surprising behavior itself: `terraform plan` succeeds and
-silently uses the default, not `null`. Diagnosed by comparing expected
-vs. actual: `terraform plan -var="custom_role_name=null" | grep role_name`
-shows the fallback name, not `null`. Fix: either remove `nullable =
-false` (allowing `null` through) if `null` is meant to be a meaningful
-override signal, or accept that the default is the intended safety net
-and stop treating `null` as special.
+**Error 2 — two separate gotchas stacked on top of each other**
+
+Step A (`-var="custom_role_name=null"`) does **not** demonstrate
+`nullable = false`. Per Terraform's docs, `-var` values are interpreted
+as **literal strings** for scalar-typed variables like `string` — HCL
+keywords such as `null` are only parsed for complex types (list, map,
+object, etc.). So `-var="custom_role_name=null"` assigns the literal
+4-character string `"null"`, not the HCL `null` value. The plan output
+proves it:
+```
+* custom_role_name = "null"
+```
+That's a real string, not a fallback default and not an actual null —
+`nullable = false` never even gets a chance to act, because no `null`
+ever reached the variable.
+
+Step B (`-var-file="null.tfvars"`) is the correct repro. `.tfvars`
+files are parsed with full HCL syntax, so `custom_role_name = null` is
+a genuine null. *Now* `nullable = false` kicks in: since the variable
+can't be null and has a `default`, Terraform silently substitutes it.
+The plan output confirms this:
+```
+* custom_role_name = "cloudnova-fallback-role"
+```
+
+The lesson: a learner expecting to check `var.custom_role_name == null`
+downstream and branch to a computed fallback will never see `null` —
+Terraform substitutes the `default` before the value is ever used in
+the module. Fix: either remove `nullable = false` (allowing real `null`
+through so it can be checked explicitly) if `null` is meant to be a
+meaningful override signal, or accept the default as the intended
+safety net and stop treating `null` as special. Separately: always pass
+`null` via a `.tfvars` file (or `-var-file`) rather than `-var` on the
+CLI, since `-var` won't parse it as HCL for scalar types.
 
 **Error 3 — arithmetic operator applied to mismatched types**
 `var.retry_count + "extra"` attempts to add a `number` and a `string`.
@@ -1676,7 +2070,7 @@ was a descriptive string: `"${var.retry_count} extra"`.
 **Cleanup:**
 ```bash
 cd src/break-fix/
-rm -f terraform.tfstate terraform.tfstate.backup
+rm -f terraform.tfstate terraform.tfstate.backup null.tfvars
 cd ../..
 ```
 No resources were created in this scenario (all three errors are caught
@@ -1734,6 +2128,7 @@ Functionally both work here, but it signals a design smell worth raising in revi
    stylistic preferences.** Converting a same-type comparison just to
    "make it more explicit" (e.g. `tostring(var.n) == "3"`) is a design
    smell, not a best practice.
+
 > **Demo scope:** Primary concept: Terraform input variables — the full
 > argument set (`type`, `validation`, `sensitive`, `ephemeral`,
 > `nullable`) and value precedence. Supporting concepts: operators and
