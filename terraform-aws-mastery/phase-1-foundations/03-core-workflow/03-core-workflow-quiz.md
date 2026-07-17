@@ -1,215 +1,387 @@
 # Quiz — Demo 03: Core Workflow Deep-Dive: Plan Flags, Graph, and Debug Logging
 
-> One correct answer per question unless stated otherwise.
-> Target: 80% or above before moving to Demo 05.
-> TA-004 exam style.
+> Question types: True/False, Multiple Choice (1 answer), Multiple
+> Answer (N answers, stated in the question) — matching the real
+> TA-004 exam format.
+> Target: 80% or above before moving to Demo 04.
 
 ---
 
-**Q1.** You run `terraform fmt -check -recursive` in a project with a
-`break-fix/` subdirectory and it exits `0`. What does this confirm?
+**Q1. (Multiple Choice)** `terraform fmt -check` on a misformatted file
+returns which exit code, and what does that specific code mean?
 
-- A) All `.tf` files in the project, including `break-fix/`, are already
-     in canonical format
-- B) Only the current directory's `.tf` files are formatted — `break-fix/`
-     wasn't checked
-- C) The configuration is valid and ready to apply
-- D) No provider credentials are configured
+- A) `1` — an HCL parse error
+- B) `2` — a CLI usage error
+- C) `3` — valid HCL, but not in canonical format
+- D) `127` — command not found
 
 <details>
 <summary>Answer</summary>
 
-**A.** `-recursive` checks `.tf` files in the current directory AND all
-subdirectories, including `break-fix/`. Exit code `0` with `-check` means
-nothing would be reformatted anywhere in scope. (B describes the result
-WITHOUT `-recursive`. C and D are unrelated — `fmt` doesn't validate
-configuration or check credentials.)
+**C.** `fmt -check` exit codes: `0` = already formatted, `1` = CLI/usage
+error, `2` = HCL parse error, `3` = valid HCL but not canonically
+formatted — the one CI pipelines should watch for. `-check` never writes
+to disk regardless of the result.
 
 </details>
 
 ---
 
-**Q2.** A queue policy's `Condition` block references an SNS topic ARN
-from a different AWS account than the one actually deploying this
-configuration. What is the EARLIEST point this would be detected?
+**Q2. (True/False)** `terraform fmt -check` (without `-recursive`) on a
+project containing a `modules/` subdirectory with misformatted files
+will detect and flag those subdirectory files.
 
-- A) `terraform validate`
-- B) `terraform plan` (refresh step)
-- C) `terraform apply` — but only if you inspect the deployed policy
-     afterward (e.g. via `TF_LOG=DEBUG`)
-- D) Never — Terraform has no way to detect this
+- A) True
+- B) False
 
 <details>
 <summary>Answer</summary>
 
-**C.** `validate` (A) checks internal consistency only — a well-formed
-ARN string for a different account is still a valid string. `plan`'s
-refresh (B) checks current resource state but wouldn't flag a policy
-value as "wrong" — it's syntactically valid IAM policy. `apply` (C)
-will succeed (the API call to set the policy succeeds), but the RESULT
-is wrong — only inspecting the deployed policy (e.g. comparing
-`terraform output topic_arn` against the debug log's view of the actual
-policy) reveals the mismatch. D is incorrect — it CAN be detected, just
-not automatically by Terraform's own success/failure reporting.
+**B) False.** Without `-recursive`, `fmt` only checks the current
+directory — any subdirectory (like `modules/` or `break-fix/`) is
+silently skipped, giving false confidence that the whole project is
+formatted when it wasn't actually checked.
 
 </details>
 
 ---
 
-**Q3.** You run:
+**Q3. (True/False)** `terraform validate` makes API calls to the cloud
+provider to confirm resources exist and credentials are valid.
 
-```bash
-terraform plan -out=tfplan
-# (1 hour passes — a teammate merges an unrelated .tf change)
-terraform apply tfplan
-```
-
-What happens?
-
-- A) `apply tfplan` silently applies the original plan, ignoring the new
-     change
-- B) `apply tfplan` silently incorporates the teammate's new change
-     automatically
-- C) `apply tfplan` fails — the saved plan no longer matches current
-     config/state
-- D) `apply tfplan` prompts you to choose which version to apply
+- A) True
+- B) False
 
 <details>
 <summary>Answer</summary>
 
-**C.** `apply tfplan` requires the saved plan to still match current
-configuration and state. If either has changed since the plan was saved
-(here, the teammate's merge changed the configuration), Terraform detects
-the mismatch and refuses to apply — it does not silently apply a stale
-plan (A) or merge in new changes (B), and there's no interactive prompt
-(D) since saved-plan applies are designed for non-interactive/CI use.
+**B) False.** `validate` makes zero API calls — it only checks internal
+configuration consistency (syntax, references, types, required
+arguments). It needs no AWS credentials at all to run.
 
 </details>
 
 ---
 
-**Q4.** A configuration has 2 resources with pending changes: Resource A
-(SQS queue) and Resource B (SNS topic), with no dependency between them.
-You run `terraform apply -target=aws_sqs_queue.notifications` (Resource
-A) and it completes successfully. What is the state of Resource B's
-pending change?
+**Q4. (Multiple Choice)** Which of the following would `terraform
+validate` FAIL to catch?
+
+- A) A resource block missing a required argument
+- B) A reference to an undeclared variable
+- C) A hardcoded VPC ID in a resource argument that doesn't actually exist in the AWS account
+- D) An unknown argument name for a given resource type
+
+<details>
+<summary>Answer</summary>
+
+**C.** `validate` checks internal consistency only — syntax, references
+within the configuration, types, required arguments (A, B, D are all
+things it does catch). Whether a specific hardcoded ID actually exists
+in the real AWS account is a semantic question that requires an API
+call — that only happens at `plan` (read-only) or `apply` time.
+
+</details>
+
+---
+
+**Q5. (Multiple Answer — Pick the 2 correct responses)** Which TWO of
+the following commands refresh state from real infrastructure via API
+calls by default (unless a flag disables it)?
+
+- A) `terraform fmt`
+- B) `terraform plan`
+- C) `terraform validate`
+- D) `terraform apply`
+- E) `terraform graph`
+
+<details>
+<summary>Answer</summary>
+
+**B and D.** Both `plan` and `apply` refresh state from real
+infrastructure by default — this is exactly what `-refresh=false` exists
+to skip. `fmt` (A) and `graph` (E) never touch AWS at all — pure local
+operations. `validate` (C) makes zero API calls by design.
+
+</details>
+
+---
+
+**Q6. (Multiple Choice)** `terraform plan -out=tfplan` is run, then an
+hour later `terraform apply tfplan` is run — but the configuration
+changed in between (a teammate merged an edit). What happens?
+
+- A) `apply tfplan` silently applies the original plan, ignoring the change
+- B) `apply tfplan` silently incorporates the new change automatically
+- C) `apply tfplan` fails — the saved plan no longer matches current config/state
+- D) `apply tfplan` prompts interactively to choose which version to apply
+
+<details>
+<summary>Answer</summary>
+
+**C.** This is the entire point of saved plans: `apply tfplan` requires
+the plan to still match current configuration and state. Any change
+since the plan was saved causes Terraform to detect the mismatch and
+refuse — never silently applying a stale plan (A) or absorbing new
+changes (B). There's no interactive prompt (D), since saved-plan applies
+are designed for non-interactive CI use.
+
+</details>
+
+---
+
+**Q7. (Multiple Choice)** A configuration has two resources with pending
+changes and no dependency between them. You run `terraform apply
+-target=<resource-A>` and it completes successfully. What happens to
+resource B's pending change?
 
 - A) It was also applied, since both had pending changes
-- B) It remains unapplied — a follow-up plan/apply is needed
-- C) It was discarded — the change is lost permanently
-- D) `-target` automatically applies all resources in the same file
+- B) It remains unapplied — a follow-up plan/apply is needed to catch it
+- C) It is discarded permanently
+- D) `-target` automatically applies everything else in the same file
 
 <details>
 <summary>Answer</summary>
 
-**B.** `-target` scopes the apply to the named resource AND its
-dependencies — since Resource B has no dependency relationship with
-Resource A, it's entirely outside the scope of this targeted apply. Its
-pending change remains in `.tf` files, unapplied, until a plain
-`terraform plan`/`apply` (or a target that includes it) runs. The change
-isn't lost (C) — it's just pending, same as before the targeted apply.
+**B.** `-target` scopes strictly to the named resource and its
+dependencies. With no dependency relationship to resource B, it's
+entirely outside scope — its change sits pending until a follow-up plain
+`plan`/`apply` (or a target that includes it). Nothing is lost (C) or
+auto-applied (A, D).
 
 </details>
 
 ---
 
-**Q5.** Someone manually adds a tag to an SNS topic via the AWS Console.
-You run `terraform plan -refresh-only`. What does the output show?
+**Q8. (Multiple Choice)** What is `-target` NOT an appropriate
+substitute for?
 
-- A) Nothing — `-refresh-only` doesn't check tags
-- B) The tag addition, framed as drift ("changed outside of Terraform"),
-     with no proposed action
-- C) The tag addition, with a proposal to remove it immediately
-- D) An error, because the topic was modified outside Terraform
+- A) Recovering from a partial apply where one resource failed
+- B) Splitting a large, slow-to-plan configuration into smaller, independently-applied configurations
+- C) Testing a single resource's configuration in isolation during development
+- D) Applying one resource first because other resources depend on it
 
 <details>
 <summary>Answer</summary>
 
-**B.** `-refresh-only` refreshes state from real infrastructure and
-reports differences (drift) WITHOUT proposing any changes — the output
-is explicitly framed as "Objects have changed outside of Terraform... this
-is a refresh-only plan, so Terraform will not take any actions to undo
-these changes." A normal `terraform apply` afterward would be what
-proposes removing the untracked tag (if not added to `.tf`).
+**B.** `-target` is documented as a short-term escape hatch for
+exceptional situations — recovery (A), isolated testing (C), and
+ordering necessity (D) are all legitimate uses. It is explicitly NOT a
+substitute for the structural fix to "plans are routinely too large or
+slow," which is splitting the configuration into smaller, independently
+managed pieces.
 
 </details>
 
 ---
 
-**Q6.** What is the default value of `-parallelism`, and in a
-configuration where every resource depends on the previous one (a linear
-chain), what effect does changing `-parallelism` from 10 to 2 have on
-apply behavior?
+**Q9. (Multiple Choice)** A resource has both configuration drift (a
+manually-added tag) and a separate pending `.tf` edit. What does plain
+`terraform plan` show, versus `terraform plan -refresh-only`?
 
-- A) Default is 10; changing to 2 roughly doubles apply time
-- B) Default is 5; changing to 2 has no effect
-- C) Default is 10; changing to 2 has no meaningful effect, since only one
-     resource is ever ready to run at a time in a linear chain
-- D) Default is 10; changing to 2 causes the apply to fail
+- A) Both show identical output
+- B) Plain `plan` merges both changes into one undifferentiated diff; `-refresh-only` shows only the drift, isolated and labeled
+- C) Plain `plan` shows only the drift; `-refresh-only` shows only the config edit
+- D) Neither command can show both types of change
 
 <details>
 <summary>Answer</summary>
 
-**C.** The default is 10. `-parallelism` caps how many INDEPENDENT,
-ready-to-run operations can execute concurrently. In a fully linear
-dependency chain, only one resource is ever ready at any given moment —
-there's nothing to parallelize regardless of the cap, so 10 vs 2 makes no
-meaningful difference. It would matter if there were many independent
-resources ready simultaneously.
+**B.** Plain `plan` refreshes state and then diffs against `.tf` —
+drift and pending config changes appear together with no label
+distinguishing which is which. `-refresh-only` is the only mode that
+isolates drift specifically, explicitly framed as "Objects have changed
+outside of Terraform," and shows nothing about pending config edits at
+all.
 
 </details>
 
 ---
 
-**Q7.** In `terraform graph` output, you see:
-`"[root] aws_sns_topic_subscription.queue" -> "[root] aws_sqs_queue_policy.notifications"`
-but `aws_sns_topic_subscription.queue`'s arguments (`topic_arn`,
-`protocol`, `endpoint`) don't reference the policy resource at all. What
-does this edge represent?
+**Q10. (Multiple Choice)** What does `terraform plan -refresh=false`
+actually do?
 
-- A) An error in the graph — this edge shouldn't exist
-- B) An implicit dependency inferred from a shared variable
-- C) An explicit dependency added via `depends_on`, expressing an ordering
-     requirement with no attribute-reference equivalent
-- D) A circular dependency that Terraform will fail to resolve
+- A) Actively checks AWS for drift and reports only drift
+- B) Skips checking AWS entirely, planning purely from the existing state file
+- C) Is functionally identical to `-refresh-only`
+- D) Forces a fresh full state rebuild before planning
 
 <details>
 <summary>Answer</summary>
 
-**C.** Since the subscription's arguments don't reference the policy at
-all, this edge can only come from an explicit `depends_on`. It expresses
-a real-world ordering requirement (the policy must exist before the
-subscription, so SNS has delivery permission from the start) that has no
-natural attribute-reference equivalent — similar to Demo 01's S3
-`depends_on` case.
+**B.** `-refresh=false` skips the refresh step — it never asks AWS
+anything, planning from whatever the state file already says. This
+makes it faster but risks missing real drift if time has passed or
+other engineers/automation have touched the same resources. It is the
+near-opposite of `-refresh-only` (A describes `-refresh-only`, not this
+flag).
 
 </details>
 
 ---
 
-**Q8.** You set `TF_LOG=DEBUG TF_LOG_PATH=debug.log` and run `terraform
-plan -refresh-only`. The resulting `debug.log` is several thousand lines.
-What is the most effective next step to find information about a specific
-failing resource, e.g. `aws_sqs_queue_policy.notifications`?
+**Q11. (Multiple Choice)** What is the default value of `-parallelism`,
+and what does it actually control?
 
-- A) Read the entire file from the top
-- B) Set `TF_LOG=TRACE` instead and try again
-- C) `grep` the log file for the resource type/relevant API action (e.g.
-     `GetQueueAttributes`)
-- D) Delete the log and re-run without `TF_LOG` — it's too verbose to be
-     useful
+- A) Default 5; controls the order resources are created in
+- B) Default 10; controls the maximum number of resource operations that can run concurrently
+- C) Default 10; controls how many times Terraform retries a failed API call
+- D) Default 1; disables all concurrency unless raised
 
 <details>
 <summary>Answer</summary>
 
-**C.** `TF_LOG_PATH` exists specifically so debug output can be searched
-rather than scrolled through — `grep` for the resource type or the
-specific API action (e.g. `SetQueueAttributes`/`GetQueueAttributes` for
-an SQS queue policy) narrows thousands of lines down to the relevant
-request/response. Reading from the top (A) is impractical at this scale.
-`TRACE` (B) would make the file even larger without first trying `DEBUG`
-+ targeted search. Giving up (D) defeats the purpose of debug logging —
-the slowness is in the volume, not the usefulness of the content.
+**B.** Default is 10. It caps how many independent, ready-to-run
+operations execute concurrently during `apply` — it never changes
+*order* (the dependency graph still determines that), only how much
+happens at once.
+
+</details>
+
+---
+
+**Q12. (Multiple Choice)** In a configuration where every resource forms
+a single linear dependency chain, what effect does lowering
+`-parallelism` from 10 to 2 have?
+
+- A) Roughly doubles apply time
+- B) No meaningful effect — only one resource is ever ready to run at a time regardless of the cap
+- C) Causes the apply to fail
+- D) Forces resources to apply in reverse order
+
+<details>
+<summary>Answer</summary>
+
+**B.** In a fully linear chain, there's never more than one resource
+simultaneously ready to run — there's nothing to parallelize regardless
+of the `-parallelism` value. The flag only matters when multiple
+independent resources are ready at the same moment.
+
+</details>
+
+---
+
+**Q13. (Multiple Choice)** When is lowering `-parallelism` below the
+default of 10 actually useful?
+
+- A) Never — the default is always optimal
+- B) When an AWS API is returning throttling errors because too many concurrent calls are hitting the same service
+- C) Only when using the `random` provider
+- D) When the configuration has fewer than 10 resources total
+
+<details>
+<summary>Answer</summary>
+
+**B.** Lowering parallelism trades apply speed for staying under a
+service's rate limits — directly useful when `ThrottlingException` /
+`RequestLimitExceeded` errors appear. It has nothing to do with which
+providers are used (C) or simple resource count alone (D) — what
+matters is how many *independent* resources are ready simultaneously.
+
+</details>
+
+---
+
+**Q14. (True/False)** `terraform graph` requires AWS credentials and
+makes API calls to build an accurate dependency graph.
+
+- A) True
+- B) False
+
+<details>
+<summary>Answer</summary>
+
+**B) False.** `terraform graph` makes zero API calls and needs no
+credentials — it reflects only the dependency graph Terraform computes
+internally from the configuration itself, in DOT format.
+
+</details>
+
+---
+
+**Q15. (Multiple Choice)** Resource A's arguments genuinely reference
+both Resource B and Resource C, but `terraform graph`'s output shows no
+direct edge from A to C — only A → B and B → C. What explains the
+missing A → C edge?
+
+- A) A bug in `terraform graph`
+- B) Transitive reduction — since A → C is already implied via A → B → B, the direct edge is pruned from the rendered output for readability
+- C) A does not actually depend on C
+- D) Circular dependency detection removed it
+
+<details>
+<summary>Answer</summary>
+
+**B.** `terraform graph` applies a transitive reduction before
+rendering — if a dependency is already reachable through another path,
+the direct edge is considered redundant and omitted. The dependency
+still exists and still governs apply order; it's simply not drawn as a
+separate line when a path already implies it.
+
+</details>
+
+---
+
+**Q16. (True/False)** `TF_LOG=TRACE` produces less verbose output than
+`TF_LOG=DEBUG`.
+
+- A) True
+- B) False
+
+<details>
+<summary>Answer</summary>
+
+**B) False.** Verbosity order, highest to lowest: `TRACE` > `DEBUG` >
+`INFO` > `WARN` > `ERROR`. `TRACE` is the most verbose level, including
+full HTTP request/response bodies — even more detail than `DEBUG`.
+
+</details>
+
+---
+
+**Q17. (Multiple Choice)** `terraform apply` reports success, but a
+downstream system that depends on a resource's configuration is
+behaving incorrectly, with no error anywhere in Terraform's own output.
+What is the most direct way to diagnose this?
+
+- A) Run `terraform validate` again
+- B) Run `terraform destroy` and reapply from scratch
+- C) Enable `TF_LOG=DEBUG` (or `TRACE`) with `TF_LOG_PATH` and inspect the actual request/response bodies sent to and from the provider
+- D) Wait — Terraform will eventually detect the issue on its own
+
+<details>
+<summary>Answer</summary>
+
+**C.** This is exactly the scenario `TF_LOG` exists for — situations
+where everything passes validation, plan, and apply because the
+configuration is syntactically and structurally correct, but a value is
+semantically wrong. The debug log shows the actual data sent to and
+received from the provider, which is ground truth that Terraform's
+summary output doesn't fully surface. `validate` (A) can't catch
+semantic errors, and there's no passive detection mechanism (D).
+
+</details>
+
+---
+
+**Q18. (Multiple Choice)** An `aws_sqs_queue_policy` resource's
+`queue_url` argument and an `aws_sns_topic_subscription`'s `endpoint`
+argument (for `protocol = "sqs"`) both need to identify the same SQS
+queue. What identifier does each actually expect?
+
+- A) Both expect the queue's ARN
+- B) Both expect the queue's URL
+- C) `queue_url` expects the URL; `endpoint` expects the ARN
+- D) `queue_url` expects the ARN; `endpoint` expects the URL
+
+<details>
+<summary>Answer</summary>
+
+**C.** This is a common mixup — each AWS service's API decides which
+identifier it expects, and Terraform's arguments simply follow that.
+SQS's `SetQueueAttributes` (which `queue_url` feeds into) addresses the
+queue by URL. SNS's `Subscribe` API (which `endpoint` feeds into)
+identifies endpoints by ARN. Same queue, two different identifier types
+depending on which service's API is being called.
 
 </details>
 
@@ -219,7 +391,7 @@ Score guide:
 
 | Score | Action |
 |---|---|
-| 8/8 | Import Anki cards, move to Demo 04 |
-| 7/8 | Review the wrong answer, then proceed |
-| 6/8 | Re-read the relevant section, retry those questions |
-| Below 6/8 | Re-read the full demo and redo the walkthrough before proceeding |
+| 17-18/18 | Import Anki cards, move to Demo 04 |
+| 15-16/18 | Review the wrong answers, then proceed |
+| 13-14/18 | Re-read the relevant sections, retry those questions |
+| Below 13/18 | Re-read the full demo and redo the walkthrough before proceeding |
