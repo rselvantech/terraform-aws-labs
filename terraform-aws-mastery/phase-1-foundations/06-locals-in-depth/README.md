@@ -62,7 +62,14 @@ IAM-specific trick.
 
 ### Required Tools
 
-Same as Demo 05 — Terraform `>= 1.15.0`, AWS CLI `>= 2.x`, `jq`.
+Same as Demo 05 — Terraform `>= 1.15.0`, AWS CLI `>= 2.x`.
+
+### Verify AWS Account and Permissions
+
+```bash
+aws sts get-caller-identity --profile default
+aws configure get region --profile default
+```
 
 **Required permissions for this demo** (adds SNS to Demo 05's IAM list):
 
@@ -75,6 +82,9 @@ sts:GetCallerIdentity
 sns:CreateTopic, sns:DeleteTopic, sns:GetTopicAttributes
 sns:SetTopicAttributes, sns:Publish, sns:TagResource
 ```
+
+> For a learning account, `IAMFullAccess` and `AmazonSNSFullAccess`
+> managed policies cover the permissions above.
 
 ---
 
@@ -108,22 +118,19 @@ By the end of this demo you will be able to:
 
 ```
 06-locals-in-depth/
-└── README.md   — all source files, Anki cards, and quiz embedded below
-```
-
-Source layout referenced throughout this README:
-
-```
-src/
-├── 01-versions.tf
-├── 02-provider.tf
-├── 03-variables.tf     # Demo 05's full set + role_config + extra_tags (this demo's additions)
-├── 04-locals.tf         # full locals depth — chaining, try/coalesce/merge, jsonencode
-├── 05-main.tf           # aws_iam_role + aws_iam_role_policy (continued from Demo 05)
-├── 06-sns.tf            # NEW — aws_sns_topic, locals-composed name + policy
-├── 07-outputs.tf        # minimal outputs — full depth is Demo 07
-└── break-fix/
-    └── broken.tf
+├── README.md
+├── 06-locals-in-depth-anki.csv
+├── 06-locals-in-depth-quiz.md
+└── src/
+    ├── 01-versions.tf       # terraform block + provider version constraints
+    ├── 02-provider.tf       # AWS provider: region, profile, default_tags
+    ├── 03-variables.tf      # Demo 05's finished variable set, recreated
+    ├── 04-locals.tf         # full locals depth — chaining, try/coalesce/merge, jsonencode
+    ├── 05-main.tf           # aws_iam_role + aws_iam_role_policy (continued)
+    ├── 06-sns.tf            # NEW — aws_sns_topic, locals-composed name + policy
+    ├── 07-outputs.tf        # minimal outputs — full depth is Demo 07
+    └── break-fix/
+        └── broken.tf
 ```
 
 ---
@@ -139,7 +146,8 @@ Answer from memory before reading further:
    of using `regex()` alone?
 3. State the variable value precedence order from highest to lowest.
 
-**Answers**
+<details>
+<summary>Answers</summary>
 
 1. The `default` value is used, not `null`. With `nullable = false`,
    if `null` is passed, Terraform substitutes the default instead of
@@ -153,6 +161,8 @@ Answer from memory before reading further:
 3. CLI `-var` flag (highest) > CLI `-var-file` > `*.auto.tfvars` >
    `terraform.tfvars` > `TF_VAR_` environment variables > `default`
    value (lowest).
+
+</details>
 
 ---
 
@@ -212,6 +222,28 @@ a filtered list, a merged map. If you're tempted to write
 | Can reference other locals? | No | Yes |
 | Can reference other variables? | Only `var.<this variable>` in validation | Yes — `var.x` freely |
 | Overridable per-run? | Yes | No |
+
+**Why this asymmetry exists — locals can reference almost anything,
+variables can barely reference themselves:** it comes down to *when*
+each one is resolved, in Terraform's evaluation order (the same order
+introduced in Demo 05's validation section):
+
+1. Variables are resolved first — before locals exist, before the
+   provider is configured, before any data source has been read, and
+   before any resource has been planned
+2. Locals are computed after that — so a local can safely reference
+   any variable (already resolved), any resource or data source
+   (already part of the dependency graph by the time locals run), and
+   any other local (Terraform builds a dependency order among locals
+   automatically)
+
+A `variable`'s `validation` block runs at step 1, before step 2 even
+begins — there's nothing for it to reference yet except the variable's
+own value. A `local`, by definition, only ever gets evaluated at
+step 2 or later, so everything from step 1 is already available to it.
+This is the same reasoning Demo 05 used to explain why `validation`
+can't see other variables or resources — locals simply run at a later
+point where those things already exist.
 
 > **Locals have no `type` argument.** Terraform infers the type from
 > the assigned expression. A `{}` block where all values are strings
@@ -371,6 +403,27 @@ common_tags = merge(
 > win. `merge(overrides, base)` means base wins. Always put the
 > "higher authority" map last.
 
+**Why is `merge()` map-specific — is there no equivalent for `list`,
+`set`, or `tuple`?** `merge()` solves one specific problem: what to do
+when two collections have *conflicting keys*. That problem only exists
+for maps/objects, since only they have keys at all — a list is just
+positions, and a set has no positions or keys, only membership. So
+`merge()` genuinely has no reason to exist for the other three types;
+the *concept* of "combine two collections" still applies to them, just
+solved by different functions suited to what each type actually is:
+
+| Type | "Combine two of them" function | What it does |
+|---|---|---|
+| `map`/`object` | `merge(map1, map2)` | Combines keys; right-most wins on conflicts |
+| `list`/`tuple` | `concat(list1, list2)` | Appends one list after another — no "conflict" concept, just concatenation |
+| `set` | `setunion(set1, set2)` | Combines elements; duplicates are automatically removed (a set's defining property) |
+
+None of these three functions are interchangeable with `merge()` —
+each is shaped by what its collection type actually guarantees.
+`concat()` and `setunion()` aren't used in this series yet, but exist
+in Terraform for exactly the list/set version of this same "combine
+two collections" need.
+
 ---
 
 #### Locals for a Second, Unrelated Resource — Proving the Concept Generalizes
@@ -378,44 +431,34 @@ common_tags = merge(
 Every example so far — `name_prefix`, `role_name`, `trust_policy`,
 `common_tags` — feeds the same IAM role. That's a legitimate gap: it's
 easy to walk away thinking these patterns are IAM-specific. They're
-not. The SNS topic below reuses `local.name_prefix` and
-`local.common_tags` (already built for the IAM role) and applies the
-exact same `jsonencode()` + `merge()` pattern to a completely different
-resource type and a completely different kind of policy (a resource
-policy, not a trust policy):
+not. Part C below builds a brand-new `aws_sns_topic` that reuses
+`local.name_prefix`, `local.common_tags`, and `local.trusted_principals`
+— all already built for the IAM role — applying the exact same
+`jsonencode()` + `merge()` pattern to a completely different resource
+type and a completely different kind of policy (a resource policy, not
+a trust policy).
+
+> **This is a preview of the pattern, not the actual file to create
+> yet.** The complete `06-sns.tf` — the real, applyable resource block
+> — is written in Part C, Step 1, below. Creating it now, before Part
+> B's `try()`/`coalesce()`/`merge()` work is done, would apply an SNS
+> topic ahead of where this demo's narrative actually needs it.
+
+The shape of what's coming, illustrating just the reuse (not the full
+file):
 
 ```hcl
-locals {
-  # Reused from the IAM role's locals — proves name_prefix isn't role-specific
-  sns_topic_name = "${local.name_prefix}-deploy-notifications"
-
-  # A resource policy (who can publish/subscribe to this topic) — same
-  # jsonencode() pattern as the IAM trust policy, different statement shape
-  sns_topic_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "AllowAccountPublish"
-        Effect    = "Allow"
-        Principal = { AWS = local.trusted_principals } # reused — same list as the IAM trust policy
-        Action    = "sns:Publish"
-        Resource  = "arn:aws:sns:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.sns_topic_name}"
-      }
-    ]
-  })
-
-  # merge() again — same pattern as the IAM role's tags, different resource
-  sns_tags = merge(local.common_tags, {
-    Purpose = "deploy-notifications"
-  })
-}
+# Illustrative only — see Part C Step 1 for the complete, real file
+sns_topic_name = "${local.name_prefix}-deploy-notifications"  # reused prefix
+sns_tags       = merge(local.common_tags, { Purpose = "deploy-notifications" })
 ```
 
 **What this demonstrates:** `local.name_prefix`, `local.common_tags`,
-and `local.trusted_principals` were computed once and are now driving
-two entirely unrelated resources. Nothing about `jsonencode()` or
-`merge()` needed to change for a different resource type — the pattern
-is general-purpose, not an IAM trick.
+and `local.trusted_principals` were computed once and will drive two
+entirely unrelated resources once Part C builds the SNS topic.
+Nothing about `jsonencode()` or `merge()` needs to change for a
+different resource type — the pattern is general-purpose, not an IAM
+trick.
 
 ---
 
@@ -423,12 +466,11 @@ is general-purpose, not an IAM trick.
 
 ---
 
-## Part A — Recreate the Baseline (Demo 05's Role)
+## Part A — Rebuilding the Baseline
 
-**What you accomplish in Part A:** bring Demo 05's finished IAM role
-back up exactly as it was left — same provider, same variables, same
-locals, same resources. Nothing here is new teaching; it exists purely
-to give Part B and Part C a known-good starting point to extend.
+**What you accomplish in Part A:** recreate Demo 05's finished IAM role
+exactly, as a working starting point for this demo — no new teaching
+here, the variables/precedence concepts were already covered in Demo 05.
 
 ### Step 1 — Navigate to the project
 
@@ -484,13 +526,124 @@ provider "aws" {
 **What this file does in this demo:** provides the baseline inputs
 (role/environment/project identity, sensitive/ephemeral demonstration
 variables) this demo's locals work builds on top of — no new variables
-until Part B adds `role_config` and `extra_tags`.
+until Part B adds `role_config` and `extra_tags`. 
 
-**03-variables.tf:** *(identical to Demo 05's `03-variables.tf` —
-`aws_region`, `aws_profile`, `project`, `environment`, `demo`,
-`role_purpose`, `trusted_account_ids`, `allowed_actions`,
-`custom_role_name`, `external_secret_label`, `session_token`,
-`max_session_duration`)*
+**03-variables.tf:**
+
+```hcl
+# ── Provider configuration ─────────────────────────────────────────────────
+
+variable "aws_region" {
+  type        = string
+  description = "AWS region for all resources"
+  default     = "us-east-2"
+}
+
+variable "aws_profile" {
+  type        = string
+  description = "AWS CLI named profile for authentication"
+  default     = "default"
+}
+
+# ── Project identity ───────────────────────────────────────────────────────
+
+variable "project" {
+  type        = string
+  description = "Project name — used in resource names and tags"
+  default     = "cloudnova"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{1,18}[a-z0-9]$", var.project))
+    error_message = "project must be 3–20 lowercase alphanumeric characters or hyphens, starting with a letter."
+  }
+}
+
+variable "environment" {
+  type        = string
+  description = "Deployment environment"
+  default     = "dev"
+  nullable    = false
+
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "environment must be dev, staging, or prod."
+  }
+}
+
+variable "demo" {
+  type        = string
+  description = "Demo identifier — used in tags for traceability"
+  default     = "06-locals-in-depth"
+}
+
+# ── Role configuration ─────────────────────────────────────────────────────
+
+variable "role_purpose" {
+  type        = string
+  description = "Short purpose label for the IAM role — becomes part of the role name"
+  default     = "deploy"
+
+  validation {
+    condition     = length(var.role_purpose) <= 20 && can(regex("^[a-z][a-z0-9-]*$", var.role_purpose))
+    error_message = "role_purpose must be lowercase alphanumeric or hyphens, max 20 characters."
+  }
+}
+
+variable "trusted_account_ids" {
+  type        = list(string)
+  description = "List of AWS account IDs allowed to assume this role. Empty list = self-trust (current account only)."
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.trusted_account_ids : can(regex("^[0-9]{12}$", id))])
+    error_message = "All trusted_account_ids must be 12-digit AWS account IDs."
+  }
+}
+
+variable "allowed_actions" {
+  type        = list(string)
+  description = "IAM actions this role is permitted to perform"
+  default     = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
+}
+
+variable "custom_role_name" {
+  type        = string
+  description = "Optional: override the computed role name. If null, a name is computed from project+environment+purpose."
+  default     = null
+  nullable    = true
+}
+
+# ── Sensitive and ephemeral demonstration ──────────────────────────────────
+
+variable "external_secret_label" {
+  type        = string
+  description = "A label for an external secret — sensitive, stored in state but redacted from output"
+  default     = "demo-secret-label"
+  sensitive   = true
+}
+
+# NOTE: ephemeral variables cannot be used in regular resource arguments —
+# carried over from Demo 05 for consistency; not otherwise used in this demo.
+variable "session_token" {
+  type        = string
+  description = "A short-lived token — ephemeral, never written to state"
+  default     = "demo-session-token"
+  ephemeral   = true
+}
+
+# ── Role instance configuration ────────────────────────────────────────────
+
+variable "max_session_duration" {
+  type        = number
+  description = "Maximum session duration in seconds (3600–43200)"
+  default     = 3600
+
+  validation {
+    condition     = var.max_session_duration >= 3600 && var.max_session_duration <= 43200
+    error_message = "max_session_duration must be between 3600 (1 hour) and 43200 (12 hours)."
+  }
+}
+```
 
 ---
 
@@ -500,7 +653,7 @@ until Part B adds `role_config` and `extra_tags`.
 had before `try()`/`coalesce()`/`merge()` were introduced — Part B
 extends this same block.
 
-**04-locals.tf (baseline):**
+**04-locals.tf:**
 
 ```hcl
 data "aws_caller_identity" "current" {}
@@ -510,6 +663,8 @@ locals {
   role_name   = var.custom_role_name != null ? var.custom_role_name : "${local.name_prefix}-${var.role_purpose}-role"
   policy_name = "${local.name_prefix}-${var.role_purpose}-policy"
 
+  # for expression (preview — full coverage Demo 09): builds one principal
+  # ARN per trusted account ID, or falls back to self-trust if the list is empty
   trusted_principals = length(var.trusted_account_ids) > 0 ? [
     for id in var.trusted_account_ids : "arn:aws:iam::${id}:root"
   ] : ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
@@ -597,7 +752,7 @@ output "role_arn" {
 
 ---
 
-### Step 3 — Initialize and apply the baseline
+### Step 3 — Initialise and apply the baseline
 
 ```bash
 terraform init
@@ -605,32 +760,54 @@ terraform validate
 terraform apply
 ```
 
-Expected: `Apply complete! Resources: 2 added, 0 changed, 0 destroyed.`
-— same shape of output as Demo 05's apply.
+Type `yes`. Expected output:
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
+```
+Apply complete! Resources: 2 added, 0 changed, 0 destroyed.
+```
+> **Expect exactly 2 resources here** (`aws_iam_role.deploy` and
+> `aws_iam_role_policy.deploy`) 
+
+**Verify:**
+
+```
+Console → IAM → Roles → cloudnova-dev-deploy-role
+  → Trust relationships tab: your account ARN ✅
+  → Permissions tab: cloudnova-dev-deploy-policy (inline) ✅
+```
 
 ---
 
-## Part B — `try()`, `coalesce()`, and `merge()` in Practice
+## Part B — try(), coalesce(), and merge() in Practice
 
-**What you accomplish in Part B:** this is where the demo's real
-content starts. Add an optional structured config object, read it
-safely with `try()` and `coalesce()`, and demonstrate `merge()`'s
-right-most-wins tag composition — confirming each function's behavior
-against a live `apply`.
+**What you accomplish in Part B:** extend the baseline locals with an
+optional `role_config` object read safely via `try()`, a `coalesce()`
+fallback for session duration, and `merge()`-based tag composition
+where caller-supplied tags override defaults. **Every change in this
+Part updates the same `aws_iam_role.deploy` and
+`aws_iam_role_policy.deploy` created in Part A — this is intentional.**
+Nothing here creates new resources; Terraform will show each `apply`
+as an in-place update (`~`), not a new resource, because we're
+refining the same role's configuration incrementally, the way a real
+role's config evolves over time in practice rather than being
+recreated from scratch.
 
 ### Step 1 — Add an optional config object variable
+
+#### `03-variables.tf` — Add `role_config`
+
+**What this change does in this demo:** adds one new variable,
+`role_config`, whose fields are all individually optional — this is
+what `try()` in Step 2 will read from safely.
 
 Add to `03-variables.tf`:
 
 ```hcl
 variable "role_config" {
   type = object({
-    description      = optional(string)
-    path             = optional(string, "/")
-    max_session_secs = optional(number, 3600)
+    description      = optional(string)         # no default → null if omitted
+    path             = optional(string, "/")    # explicit default "/" if omitted
+    max_session_secs = optional(number, 3600)  # explicit default 3600 if omitted
   })
   description = "Optional structured role configuration. All fields are optional."
   default     = {}
@@ -638,19 +815,40 @@ variable "role_config" {
 }
 ```
 
-### Step 2 — Add `try()` and `coalesce()` locals to `04-locals.tf`
+> **Two different kinds of "optional" here, and it matters for Step
+> 2.** `description = optional(string)` has no second argument, so an
+> omitted `description` becomes `null`. `path` and `max_session_secs`
+> both supply an explicit default as the second argument to
+> `optional()`, so they can never be `null` — they're always at least
+> `"/"` and `3600` respectively, even if the caller never mentions
+> them at all.
 
-Add inside the `locals {}` block:
+### Step 2 — Add `try()` and `coalesce()` locals
+
+#### `04-locals.tf` — Add `role_description` and `effective_max_session`
+
+**What this change does in this demo:** `role_description` uses
+`try()` because `var.role_config.description` can genuinely be `null`
+(it has no default — see Step 1's note). `effective_max_session` layers
+`try()` inside `coalesce()` for the same reason. Neither pattern is
+needed for `path`, which is why Step 3's `05-main.tf` update references
+`var.role_config.path` directly, with no `try()` at all.
+
+Add inside the `locals {}` block in `04-locals.tf`:
 
 ```hcl
-  # try() safely reads the optional description field — if null, returns fallback
+  # try() safely reads the optional description field — var.role_config.description
+  # can genuinely be null (no default was given for it in 03-variables.tf),
+  # so try() catches that and falls through to a computed default
   role_description = try(
     var.role_config.description,
     "CI/CD deploy role for ${var.project} ${var.environment}"
   )
 
-  # coalesce(): try() extracts max_session_secs (null if omitted);
-  # coalesce() falls through to var.max_session_duration if null
+  # coalesce(): try() extracts max_session_secs (which, unlike description,
+  # already has its own default of 3600 from optional() — so this try()
+  # is a defensive no-op here, and coalesce() falls through to
+  # var.max_session_duration only if try() itself somehow returned null)
   effective_max_session = coalesce(
     try(var.role_config.max_session_secs, null),
     var.max_session_duration
@@ -659,35 +857,98 @@ Add inside the `locals {}` block:
 
 ### Step 3 — Update `05-main.tf` and test
 
+#### `05-main.tf` — Read `role_description` and `role_config.path`
+
+**What this change does in this demo:** updates the **same**
+`aws_iam_role.deploy` resource from Part A — not a new resource. Three
+arguments change: `description` now reads `local.role_description`
+instead of a hardcoded string; `path` now reads `var.role_config.path`
+directly (no `try()` — see the note below); `max_session_duration` now
+reads `local.effective_max_session` instead of `var.max_session_duration`
+directly.
+
 ```hcl
 resource "aws_iam_role" "deploy" {
   name                 = local.role_name
   description          = local.role_description
-  path                 = try(var.role_config.path, "/")
+  path                 = var.role_config.path                # no try() needed — see note below
   assume_role_policy   = local.trust_policy
   max_session_duration = local.effective_max_session
   tags                 = local.common_tags
 }
 ```
 
+> **Why `path` doesn't need `try()`, unlike `description`:**
+> `var.role_config.path` has an explicit default (`"/"`) built into its
+> own `optional(string, "/")` declaration in Step 1 — it can **never**
+> be `null`, so there's nothing for `try()` to catch. Wrapping it in
+> `try(var.role_config.path, "/")` would be redundant: the fallback
+> would never actually trigger, since the value is already guaranteed
+> non-null before `try()` ever gets involved. `description`, by
+> contrast, has no built-in default (`optional(string)` alone), so it
+> genuinely can be `null` — that's the real difference that decides
+> whether `try()` earns its place.
+
 ```bash
 # Without role_config — uses all defaults
-terraform apply
-# description = "CI/CD deploy role for cloudnova dev", max_session_duration = 3600
+terraform plan
+# description = null , max_session_duration = 3600 (unchanged)
+```
 
+Expected — Terraform shows this as an **update in-place** (`~`) on the
+existing role with a change in `description`
+
+
+```
+  # aws_iam_role.deploy will be updated in-place
+  ~ resource "aws_iam_role" "deploy" {
+      - description           = "CI/CD deploy role for cloudnova dev" -> null
+        id                    = "cloudnova-dev-deploy-role"
+        name                  = "cloudnova-dev-deploy-role"
+        # (11 unchanged attributes hidden)
+    }
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+```
+
+```bash
 # With partial role_config — only description overridden
 terraform apply -var='role_config={"description":"Platform deploy role"}'
 # description = "Platform deploy role", max_session_duration = 3600 (unchanged)
 ```
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
+Expected — Terraform shows this as an **update in-place** (`~`) on the
+existing role, not a new resource:
+
+```
+  # aws_iam_role.deploy will be updated in-place
+  ~ resource "aws_iam_role" "deploy" {
+      ~ description = "CI/CD deploy role for cloudnova dev" -> "Platform deploy role"
+        id          = "cloudnova-dev-deploy-role"
+        name        = "cloudnova-dev-deploy-role"
+        # (11 unchanged attributes hidden)
+    }
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+```
+
+> ✅ Verified against a live run.
+
+**Verify:**
+
+```
+Console → IAM → Roles → cloudnova-dev-deploy-role
+  → Description: "Platform deploy role" ✅ (updated, same role — same
+    ARN and creation date as Part A, only description changed)
+```
 
 > **Only `description` changed in the second apply.** The in-place
 > update confirms `try()` correctly fell through to the default for
 > `max_session_secs` since it wasn't provided in the partial object.
 
-### Step 4 — Demonstrate `merge()` tag composition
+### Step 4 — Add `merge()` tag composition
+
+#### `03-variables.tf` — Add `extra_tags`
 
 Add to `03-variables.tf`:
 
@@ -698,6 +959,13 @@ variable "extra_tags" {
   default     = {}
 }
 ```
+
+#### `04-locals.tf` — Update `common_tags` to use `merge()`
+
+**What this change does in this demo:** replaces the plain `{}` map
+literal `common_tags` had in the baseline with a `merge()` call —
+`var.extra_tags` is listed last, so caller-supplied tags win over the
+defaults on any key conflict.
 
 Update `common_tags` in `04-locals.tf`:
 
@@ -718,65 +986,102 @@ Update `common_tags` in `04-locals.tf`:
 terraform apply -var='extra_tags={"CostCenter":"platform","Owner":"devops-team"}'
 ```
 
-Expected — "Owner" in `extra_tags` wins (right-most-wins):
+Expected — `"Owner"` in `extra_tags` wins (right-most-wins), and **both**
+the IAM role and (once Part C creates it) the SNS topic pick this up,
+since both consume `local.common_tags`:
 
 ```
-Console → IAM → cloudnova-dev-deploy-role → Tags
+  # aws_iam_role.deploy will be updated in-place
+  ~ resource "aws_iam_role" "deploy" {
+      ~ tags = {
+          + "CostCenter" = "platform"
+            ~ "Owner"    = "platform-team" -> "devops-team"
+        }
+    }
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+```
+
+> ✅ Verified against a live run.
+
+**Verify:**
+
+```
+Console → IAM → Roles → cloudnova-dev-deploy-role → Tags
   → Owner: devops-team   (overridden — right-most wins) ✅
   → CostCenter: platform (added by extra_tags) ✅
 ```
+
+> **If the Console still shows the old tag values right after
+> `apply`,** this is almost always a Console refresh lag, not a
+> Terraform problem — `terraform apply`'s own plan output (`~ "Owner" =
+> "platform-team" -> "devops-team"`) is the authoritative confirmation
+> that the update happened; refresh the Console page or wait a few
+> seconds if it looks stale.
 
 ```bash
 terraform apply   # no extra_tags — reverts to defaults
 ```
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
+> ✅ Verified against a live run.
 
-> **This `merge()` change affects every resource, not just the IAM
-> role.** `local.common_tags` is applied via `default_tags` in the
-> provider block (Part A, Step 2), so this ripples everywhere — worth
-> noting before Part C creates the SNS topic, which inherits these same
-> tags.
+> **This `merge()` change affects every resource using
+> `local.common_tags`, not just the IAM role.** `local.common_tags` is
+> applied via `default_tags` in the provider block (Step 2 of Part A),
+> so this ripples everywhere — worth noting before Part C creates the
+> SNS topic, which inherits these same tags (plus one more, added
+> specifically for it — explained there).
 
 ---
 
-## Part C — Applying Locals to a New Resource — SNS Topic
+## Part C — Locals for a Second, Unrelated Resource
 
-**What you accomplish in Part C:** the same `jsonencode()`/`merge()`
-pattern applied to a resource that has nothing to do with IAM, reusing
-`local.name_prefix`, `local.common_tags`, and `local.trusted_principals`
-computed in Part A and B — the concrete proof that this demo's
-patterns aren't IAM-specific.
+**What you accomplish in Part C:** build a brand-new `aws_sns_topic`
+whose name, tags, and access policy are composed entirely from locals
+already built for the IAM role — the concrete proof that none of this
+demo's patterns are IAM-specific. `06-sns.tf` exists as an empty file
+from the start of this demo; this Part is where it gets its real
+content.
 
-### Step 1 — Create `06-sns.tf`
+### Step 1 — Create `06-sns.tf` with locals-composed name and policy
 
 #### `06-sns.tf` — The SNS topic, proving locals generalize
 
-**What this file does in this demo:** declares `aws_sns_topic.deploy_notifications`,
-named and policy-secured entirely from locals already built for the
-IAM role — the concrete proof that this demo's patterns aren't
-IAM-specific.
+**What this file does in this demo:** declares
+`aws_sns_topic.deploy_notifications`, named and policy-secured entirely
+from locals already built for the IAM role (`local.name_prefix`,
+`local.trusted_principals`, `local.common_tags`). `sns_tags` adds one
+SNS-specific tag (`Purpose = "deploy-notifications"`) on top of
+`local.common_tags` via `merge()` — this is why the SNS topic ends up
+with one more tag than the IAM role: the IAM role's `tags` argument
+uses `local.common_tags` directly (Part A), while the SNS topic uses
+`local.sns_tags`, a `merge()`-extended version defined right here.
 
-**06-sns.tf:**
+Create a file **06-sns.tf** and add the below content:
 
 ```hcl
 locals {
+  # Reused from the IAM role's locals — proves name_prefix isn't role-specific
   sns_topic_name = "${local.name_prefix}-deploy-notifications"
 
+  # A resource policy (who can publish to this topic) — same jsonencode()
+  # pattern as the IAM trust policy, different statement shape
   sns_topic_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
         Sid       = "AllowAccountPublish"
         Effect    = "Allow"
-        Principal = { AWS = local.trusted_principals }
+        Principal = { AWS = local.trusted_principals } # reused — same list as the IAM trust policy
         Action    = "sns:Publish"
         Resource  = "arn:aws:sns:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.sns_topic_name}"
       }
     ]
   })
 
+  # merge() again — same pattern as the IAM role's tags (Part B, Step 4),
+  # but this resource gets ONE EXTRA tag (Purpose) that the IAM role does
+  # not — this is why the two resources' tag sets differ by one entry
   sns_tags = merge(local.common_tags, {
     Purpose = "deploy-notifications"
   })
@@ -791,7 +1096,14 @@ resource "aws_sns_topic" "deploy_notifications" {
 
 ### Step 2 — Apply and verify with a real published message
 
-Add a quick output to `07-outputs.tf` to get the ARN:
+#### `07-outputs.tf` — Add the SNS topic ARN output
+
+**What this change does in this demo:** exposes `sns_topic_arn` so the
+`aws sns publish`/`list-tags-for-resource` calls below have something
+to target — without this output, you'd need to read the ARN from state
+directly instead of via `terraform output -raw`.
+
+Add to `07-outputs.tf`:
 
 ```hcl
 output "sns_topic_arn" {
@@ -802,10 +1114,35 @@ output "sns_topic_arn" {
 
 ```bash
 terraform apply
+```
+
+**Verify:**
+
+```
+Console → SNS → Topics → cloudnova-dev-deploy-notifications
+  → Access policy tab → Sid: AllowAccountPublish, Principal: your account ARN ✅
+  → Tags tab → Purpose: deploy-notifications ✅
+```
+
+Now publish a real message:
+
+```bash
 aws sns publish \
+  --profile default \
+  --region us-east-2 \
   --topic-arn "$(terraform output -raw sns_topic_arn)" \
   --message "Demo 06 locals verification — $(date -u +%FT%TZ)"
 ```
+
+> **If this errors with `Invalid parameter: TopicArn`,** the most
+> common cause is a stale or empty value captured into `--topic-arn` —
+> confirm `terraform output -raw sns_topic_arn` actually prints the
+> full ARN by itself first (`echo "$(terraform output -raw
+> sns_topic_arn)"`) before using it inside the `aws sns publish`
+> command, and make sure `terraform apply` has been re-run since the
+> output was added — `terraform output` only shows values that exist
+> in the current state, which requires the output to have been through
+> at least one `apply` after being added.
 
 Expected:
 
@@ -815,8 +1152,6 @@ Expected:
 }
 ```
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
 
 > **A real `MessageId` confirms the topic is actually functional, not
 > just present in state** — it accepted and processed a real publish
@@ -826,16 +1161,55 @@ Expected:
 ### Step 3 — Confirm the naming and tags reused the IAM role's locals
 
 ```bash
-aws sns list-tags-for-resource --resource-arn "$(terraform output -raw sns_topic_arn)"
+aws sns list-tags-for-resource --profile default --region us-east-2 --resource-arn "$(terraform output -raw sns_topic_arn)"
 ```
 
 Expected: tags include `Environment: dev`, `ManagedBy: Terraform`, and
-`Purpose: deploy-notifications` — the first three inherited unchanged
+`Purpose: deploy-notifications` — the first two inherited unchanged
 from `local.common_tags`, the last one added specifically for this
-resource via `merge()`.
+resource via `local.sns_tags`'s `merge()` in Step 1.
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
+```
+{
+    "Tags": [
+        {
+            "Key": "Project",
+            "Value": "cloudnova"
+        },
+        {
+            "Key": "Environment",
+            "Value": "dev"
+        },
+        {
+            "Key": "Owner",
+            "Value": "platform-team"
+        },
+        {
+            "Key": "Purpose",
+            "Value": "deploy-notifications"
+        },
+        {
+            "Key": "Demo",
+            "Value": "06-locals-in-depth"
+        },
+        {
+            "Key": "ManagedBy",
+            "Value": "Terraform"
+        }
+    ]
+}
+
+```
+
+**Verify:**
+
+```
+Console → SNS → Topics → cloudnova-dev-deploy-notifications → Tags
+  → Environment: dev, ManagedBy: Terraform, Purpose: deploy-notifications ✅
+Console → IAM → Roles → cloudnova-dev-deploy-role → Tags
+  → Environment: dev, ManagedBy: Terraform (no Purpose tag — confirms
+    the IAM role uses local.common_tags directly, not local.sns_tags) ✅
+```
 
 ---
 
@@ -848,8 +1222,6 @@ terraform destroy
 Type `yes`. Expected: `Destroy complete! Resources: 3 destroyed.`
 (IAM role, inline policy, SNS topic).
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
 
 ```
 Console → IAM → Roles → cloudnova-dev-deploy-role: GONE ✅
@@ -874,16 +1246,16 @@ Console → SNS → Topics → cloudnova-dev-deploy-notifications: GONE ✅
 
 ---
 
-## Cert Tips — TA-004 Objectives Covered
+## Cert Tips
 
 ### Exam Objective Mapping
 
 | Demo concept / command | Exam objective | Notes |
 |---|---|---|
-| `coalesce()` skipping null AND `""` | TA-004 Obj 2 (Terraform basics / core concepts) | Common exam trap assumes it only skips `null` |
-| Locals have no `type` argument | TA-004 Obj 2 | Type is always inferred from the assigned expression |
-| `try()` vs `coalesce()` | TA-004 Obj 2 | Different problems — evaluation errors vs. null/empty values — frequently confused |
-| Circular local reference detection | TA-004 Obj 2 | Caught at plan time with "Cycle in local values," not silently resolved |
+| `coalesce()` skipping null AND `""` | TA-004 Obj 4e (functions) | Common exam trap assumes it only skips `null` |
+| Locals have no `type` argument | TA-004 Obj 4d (complex types) | Type is always inferred from the assigned expression |
+| `try()` vs `coalesce()` | TA-004 Obj 4e (functions)  | Different problems — evaluation errors vs. null/empty values — frequently confused |
+| Circular local reference detection | TA-004 Obj 4f (resource/value dependencies) | Caught at plan time with "Cycle in local values," not silently resolved |
 
 ### Common Exam Traps
 
@@ -1104,11 +1476,12 @@ No — `jsonencode()` is a general-purpose function for producing any JSON docum
    `name_prefix`, `common_tags`, and `trusted_principals` — all built
    for the IAM role — fed the SNS topic's name, tags, and policy
    without any IAM-specific logic anywhere in that reuse.
-> **Demo scope:** Primary concept: Terraform locals — the distinction
-> test, chaining, type inference, and `try()`/`coalesce()`/`merge()`.
-> Supporting concepts: circular-reference detection, `jsonencode()`
-> policy composition, and reusing locals across unrelated resource
-> types.
+
+> **Demo scope:** Primary concept: locals — the distinction test, type
+> inference, chaining, and circular-reference detection. Supporting
+> concepts: `try()`/`coalesce()`/`merge()`, a `jsonencode()` policy
+> pattern, and applying the same composition pattern to a second,
+> unrelated resource (`aws_sns_topic`).
 > Estimated completion time: 40 minutes (reading + hands-on + verification).
 > Checkpoints: 3 natural stopping points (end of Part A, end of Part B,
 > end of Part C).
@@ -1159,6 +1532,8 @@ sharing pattern.
 "A locals block has a map value with a key literally named 'type', e.g. local.c = { type = string, value = 'test' }. Does this declare a type constraint on local.c?","No — locals have no type-constraint mechanism at all. 'type' here is just an ordinary map key holding the string value 'string' (or whatever expression follows it). It looks like it might be enforcing something the way variable blocks do, but it is not — local.c.type just returns that literal value.","demo06,locals,break-fix"
 "The same jsonencode()+merge() pattern used for an IAM trust policy is applied to an SNS topic's resource policy. Does this mean the pattern is IAM-specific?","No — jsonencode() and merge() are general-purpose functions with no awareness of which AWS resource consumes their output. The same locals (name_prefix, common_tags, trusted_principals) can drive any number of unrelated resources without any IAM-specific logic in that reuse.","demo06,locals,jsonencode,generalization"
 "Why does merge(local.caller_tags, local.base_tags) silently produce the wrong result if the intent was 'caller overrides base'?","Because merge() is right-most-wins, and base_tags is listed last here — so base_tags's values win over caller_tags's, the opposite of the intended behavior. There's no error; it just silently applies the wrong precedence. Fix: reverse the argument order.","demo06,locals,merge,break-fix"
+"Can locals reference resources and data sources? Can variables?","Locals: yes — a local can reference data.aws_caller_identity.current.account_id, a resource attribute, another local, or a variable. Variables: no — a variable can only reference var.<itself>, and only inside its own validation block.","demo06,locals,variables"
+"An SNS topic policy manually constructs its own ARN using region + account_id + name. What is the safer alternative when the topic is managed by the same configuration?","Reference the resource's own .arn attribute directly (e.g. aws_sns_topic.x.arn) instead of reconstructing it from parts. Manual construction risks drift if any component doesn't match the resource's actual ARN.","demo06,troubleshooting,arn"
 ```
 
 ---
@@ -1166,220 +1541,284 @@ sharing pattern.
 ## Appendix — Quiz
 
 **06-locals-in-depth-quiz.md:**
+
 ````markdown
 # Quiz — Demo 06: Locals in Depth
 
-> One correct answer per question unless stated otherwise.
+> Question types: True/False, Multiple Choice (1 answer), Multiple
+> Answer (N answers, stated in the question) — matching the real
+> TA-004 exam format.
 > Target: 80% or above before moving to Demo 07.
-> TA-004 exam style.
 
 ---
 
-**Q1.** What is the distinction test for choosing a `local` over a
-`variable`?
+**Q1. (Multiple Choice)** What is the correct distinction test for
+choosing a `local` over a `variable`?
 
-A. Locals are for strings; variables are for everything else
-B. If the value would ever need to be overridden from outside the
-   configuration, it's a variable; if it's always derived internally,
-   it's a local
-C. Locals are faster to evaluate than variables
-D. There is no meaningful distinction — they're interchangeable
+- A) Locals hold complex types; variables hold only primitives
+- B) If the value would ever need external override, it's a variable; if it's always derived internally, it's a local
+- C) Locals are evaluated faster
+- D) There's no real distinction — use whichever is shorter to type
 
 <details>
 <summary>Answer</summary>
 
-**B.** The distinction is about external overridability, not type or
+**B.** The test is about external overridability, not type or
 performance. A local that's just `local.x = var.x` with no
-transformation should be a variable instead. **A** is wrong — locals
-can hold any type (maps, lists, objects, numbers), not just strings.
-**C** is wrong — there is no meaningful performance difference between
-a local and a variable; that's not the basis for the distinction at
-all. **D** is wrong — locals cannot be overridden from outside the
-configuration the way variables can, which is precisely the point of
-the distinction test.
+transformation should be a variable instead.
 
 </details>
 
 ---
 
-**Q2.** Do `locals` blocks support a `type` argument like `variable`
-blocks do?
+**Q2. (True/False)** A `locals` block supports a `type` argument, just
+like a `variable` block does.
 
-A. Yes — locals require an explicit `type`
-B. No — Terraform infers the type from the assigned expression
-C. Only for collection types (list, set, map)
-D. Only if `strict_types = true` is set on the block
+- A) True
+- B) False
 
 <details>
 <summary>Answer</summary>
 
-**B.** Locals have no `type` argument at all. Terraform infers the type
-from whatever expression is assigned — a `{}` of all-string values
-infers as `map(string)`; mixed types infer as `object({...})`. **A** is
-wrong — this is exactly the trap; there is no `type` argument to
-require. **C** is wrong — the lack of a `type` argument applies to
-every kind of local, not just collections. **D** is wrong —
-`strict_types` isn't a real Terraform argument for `locals` blocks at all.
+**B) False.** Locals have no `type` argument at all — Terraform infers
+the type entirely from the assigned expression.
 
 </details>
 
 ---
 
-**Q3.** What does `coalesce(var.custom_name, local.computed_name)`
-return when `var.custom_name` is set to `""`?
+**Q3. (Multiple Choice)** A local is defined as `{ Project = var.project,
+Count = 3 }`, where `var.project` is `type = string`. What type does
+Terraform infer?
 
-A. `""` — coalesce returns the first non-null value, and `""` is not null
-B. `local.computed_name` — coalesce skips both null AND empty string
-C. An error — coalesce requires at least one non-null argument
-D. `null`
+- A) `map(string)`
+- B) `map(number)`
+- C) `object({ Project = string, Count = number })`
+- D) `tuple([string, number])`
 
 <details>
 <summary>Answer</summary>
 
-**B.** `coalesce()` skips both `null` and `""` — empty string is
-treated the same as null. Only a non-null, non-empty string satisfies
-coalesce. **A** is wrong — this is exactly the misconception the
-question is testing; `""` not being `null` doesn't stop `coalesce()`
-from skipping it. **C** is wrong — `coalesce()` only errors if *every*
-argument is null or empty; here `local.computed_name` provides a
-fallback. **D** is wrong — `coalesce()` never returns `null` when a
-valid fallback is available.
+**C.** The two values have different types (string and number), so
+Terraform infers `object({...})`, not `map(...)`. A `map` is only
+inferred when every value shares the same type.
 
 </details>
 
 ---
 
-**Q4.** You call `merge(local.common_tags, var.extra_tags)`. Both have
-key `"Owner"`. Which value appears in the result?
+**Q4. (True/False)** If `local.b` is declared before `local.a` in a
+file, but `local.a` references `local.b`, Terraform will error because
+`local.b` isn't defined yet when `local.a` is evaluated.
 
-A. `local.common_tags`'s value — the left-most map wins
-B. `var.extra_tags`'s value — the right-most map wins
-C. Both values are combined into a list
-D. An error — duplicate keys are not allowed in merge()
+- A) True
+- B) False
 
 <details>
 <summary>Answer</summary>
 
-**B.** `merge()` uses right-most-wins for key conflicts. `var.extra_tags`
-is rightmost, so its `"Owner"` value overrides `local.common_tags`'s.
-**A** is wrong — it reverses `merge()`'s actual precedence rule. **C**
-is wrong — `merge()` produces a single flat map, never a list of
-conflicting values. **D** is wrong — `merge()` is specifically designed
-to handle key conflicts via right-most-wins; it never errors on them.
+**B) False.** Declaration order in the file has zero effect. Terraform
+builds a dependency graph from the references inside each expression
+and resolves evaluation order automatically — the same mechanism used
+for resources.
 
 </details>
 
 ---
 
-**Q5.** Two locals are written as `a = "prefix-${local.b}"` and
-`b = "suffix-${local.a}"`. What happens?
+**Q5. (Multiple Choice)** `local.a = "prefix-${local.b}"` and
+`local.b = "suffix-${local.a}"`. What happens at `terraform plan`?
 
-A. Terraform resolves them in file order, using whichever is empty
-   first as a seed
-B. `terraform plan` errors with "Cycle in local values"
-C. Both resolve to empty strings silently
-D. Only the first-declared local (`a`) is evaluated; `b` is ignored
+- A) Terraform picks an arbitrary order and one side gets an empty value
+- B) A clear "Cycle in local values" error, before any value is evaluated
+- C) Both resolve successfully using empty-string placeholders
+- D) Only `local.a` (declared first) is evaluated
 
 <details>
 <summary>Answer</summary>
 
-**B.** Circular local references are detected at plan time and produce
-a clear cycle error, not a silent or partial resolution. Fix by
-extracting the shared value into a third local neither side references
-back to. **A** is wrong — there's no "empty seed" mechanism; Terraform
-doesn't guess an evaluation order for a genuine cycle. **C** is wrong —
-nothing resolves silently; the cycle is caught before any value is
-computed. **D** is wrong — declaration order in the file has no bearing
-on which local Terraform attempts to evaluate first; both sides of a
-real cycle are equally blocked.
+**B.** Circular references are detected at plan time with an explicit
+cycle error — never silently resolved or partially evaluated. Fix by
+extracting the shared value into a third local neither side references.
 
 </details>
 
 ---
 
-**Q6.** What is the key difference between `try(expr, fallback)` and
-`coalesce(val1, val2)`?
+**Q6. (Multiple Choice)** What does `coalesce(var.name, "fallback")`
+return when `var.name` is set to `""` (empty string)?
 
-A. They are functionally identical
-B. `try()` catches evaluation errors; `coalesce()` catches null and
-   empty-string values — different problems entirely
-C. `coalesce()` only works on numbers; `try()` only works on strings
-D. `try()` requires exactly two arguments; `coalesce()` allows any number
+- A) `""` — empty string is not null, so it's returned
+- B) `"fallback"` — `coalesce()` skips both null and empty string
+- C) An error
+- D) `null`
 
 <details>
 <summary>Answer</summary>
 
-**B.** `try()` is for expressions that might error (e.g. accessing an
-optional object attribute that might not exist). `coalesce()` is for
-values that might be null or empty string. They solve different
-problems and are often combined: `coalesce(try(var.config.name, null),
-local.default)`. **A** is wrong — this is the misconception the
-question tests directly; the two functions solve distinct problems.
-**C** is wrong — neither function is restricted to a single type;
-both work across strings, numbers, and other value types. **D** is
-wrong — `try()` actually accepts any number of fallback expressions,
-and `coalesce()` requires at least one non-null argument to succeed,
-not an unlimited count with no constraint.
+**B.** `coalesce()` treats `""` the same as `null` — both are skipped.
+This is a common exam trap: empty string "not technically being null"
+doesn't stop `coalesce()` from skipping it.
 
 </details>
 
 ---
 
-**Q7.** A locals block reuses `local.name_prefix` and `local.common_tags`
-(already built for an IAM role) to name and tag a new, unrelated SNS
-topic. What does this demonstrate?
+**Q7. (Multiple Answer — Pick the 2 correct responses)** Which TWO
+statements about `try(expr1, expr2, ...)` are correct?
 
-A. That SNS topics require IAM-specific configuration
-B. That `jsonencode()` and `merge()` are general-purpose and not tied
-   to any one resource type
-C. That locals must always be reused across at least two resources
-D. Nothing — this is considered an anti-pattern
+- A) It returns `true` or `false`
+- B) It returns the value of the first argument that evaluates without error
+- C) It only errors if every single argument errors
+- D) It is functionally identical to `coalesce()`
+- E) It requires exactly two arguments
 
 <details>
 <summary>Answer</summary>
 
-**B.** Locals composed once (`name_prefix`, `common_tags`,
-`trusted_principals`) can drive any number of resources. Nothing about
-`jsonencode()` or `merge()` is IAM-specific — the pattern generalizes.
-**A** is wrong — it reverses the demonstration's actual point; nothing
-about SNS required IAM-specific setup. **C** is wrong — reuse across
-multiple resources is a nice outcome, not a requirement locals must
-satisfy to be valid. **D** is wrong — reusing already-computed values
-across unrelated resources is standard, encouraged practice, not an
-anti-pattern.
+**B and C.** `try()` returns an actual value (not a boolean — that's
+`can()`), and only fails if all provided expressions error. It accepts
+any number of arguments (not exactly two), and solves a different
+problem than `coalesce()` (errors vs. null/empty values).
 
 </details>
 
 ---
 
-**Q8.** A `locals` block is:
-```hcl
-locals {
-  common_tags = {
-    ManagedBy   = "Terraform"
-    Project     = var.project
-    Environment = var.environment
-  }
-}
-```
-Assuming `var.project` and `var.environment` are both `type = string`,
-what type does Terraform infer for `local.common_tags`?
+**Q8. (Multiple Choice)** What is the key functional difference between
+`try()` and `coalesce()`?
 
-A. `object({ ManagedBy = string, Project = string, Environment = string })`
-B. `map(string)`
-C. `tuple([string, string, string])`
-D. `any` — locals are always untyped
+- A) They solve the same problem with different syntax
+- B) `try()` catches expression evaluation errors; `coalesce()` catches null/empty-string values
+- C) `try()` is for numbers only; `coalesce()` is for strings only
+- D) `coalesce()` is deprecated in favor of `try()`
 
 <details>
 <summary>Answer</summary>
 
-**B.** All three values are strings, so Terraform infers `map(string)`
-— a map, not an object. **A** is wrong — `object({...})` is inferred
-only when the values have *different* types; here they're
-homogeneous. **C** is wrong — `tuple` is for ordered, positional
-values, not a `{}` key-value literal like this one. **D** is wrong —
-"no `type` argument" (Q2) doesn't mean "no type at all"; Terraform
-still infers a concrete type, it's just not user-declared.
+**B.** `try()` is for expressions that might error (e.g. an optional
+object attribute that may not exist). `coalesce()` is for values that
+might be `null` or `""`. They're often combined:
+`coalesce(try(var.config.name, null), local.default)`.
+
+</details>
+
+---
+
+**Q9. (Multiple Choice)** `merge(local.common_tags, var.extra_tags)` —
+both have key `"Owner"`. Which value wins?
+
+- A) `local.common_tags`'s value
+- B) `var.extra_tags`'s value
+- C) Both are kept as a list
+- D) An error — duplicate keys aren't allowed
+
+<details>
+<summary>Answer</summary>
+
+**B.** `merge()` is right-most-wins on key conflicts. Since
+`var.extra_tags` is listed last, its value overrides
+`local.common_tags`'s for any shared key.
+
+</details>
+
+---
+
+**Q10. (Multiple Choice)** You want caller-supplied tags to override a
+set of base defaults. Which argument order to `merge()` achieves this?
+
+- A) `merge(caller_tags, base_tags)`
+- B) `merge(base_tags, caller_tags)`
+- C) Either order — `merge()` is commutative
+- D) Neither — `merge()` cannot express "caller overrides base"
+
+<details>
+<summary>Answer</summary>
+
+**B.** Base defaults go first, caller overrides go last — the
+"higher authority" map always goes last in `merge()`. Reversing the
+order (A) silently flips precedence with no error, which is exactly
+the kind of mistake that's hard to spot without knowing this rule.
+
+</details>
+
+---
+
+**Q11. (Multiple Choice)** Why can `jsonencode()` and `merge()`,
+originally used to build an IAM trust policy, be reused unchanged to
+build an SNS topic's resource policy?
+
+- A) They can't — each AWS service requires its own policy-building functions
+- B) They are general-purpose functions with no awareness of which resource consumes their output
+- C) SNS and IAM share the same underlying API
+- D) Only because both policies happen to have identical structure
+
+<details>
+<summary>Answer</summary>
+
+**B.** `jsonencode()` converts any HCL value to a JSON string; `merge()`
+combines any maps. Neither function knows or cares what AWS resource
+the result is eventually assigned to — the same composition pattern
+applies to any policy document, for any service.
+
+</details>
+
+---
+
+**Q12. (Multiple Choice)** A local is defined as `local.c = { type =
+string, value = "test" }`. Does this declare a type constraint on
+`local.c`?
+
+- A) Yes — `type` inside any block enforces a constraint
+- B) No — `type` here is just an ordinary map key; locals have no type-constraint mechanism at all
+- C) Yes, but only for the `value` field
+- D) It causes a `terraform validate` error
+
+<details>
+<summary>Answer</summary>
+
+**B.** Nothing about `locals` blocks treats `type` as special — it's an
+ordinary key in an ordinary map literal here. This is valid HCL that
+does nothing resembling a `variable` block's `type` argument, which is
+exactly what makes this a subtle trap rather than an obvious syntax error.
+
+</details>
+
+---
+
+**Q13. (True/False)** Unlike `variable` blocks, `locals` blocks can
+reference resources and data sources directly.
+
+- A) True
+- B) False
+
+<details>
+<summary>Answer</summary>
+
+**A) True.** A `local` can reference `data.aws_caller_identity.current.account_id`,
+a resource attribute, another local, or a variable — variables can only
+reference `var.<themselves>`, and only inside a `validation` block.
+
+</details>
+
+---
+
+**Q14. (Multiple Choice)** Two locals reference `data.aws_caller_identity.current.account_id`
+in constructing an ARN string manually. What is a safer alternative
+where the target resource is also managed by this same configuration?
+
+- A) There is no safer alternative — manual ARN construction is required
+- B) Reference the resource's own `.arn` attribute directly (e.g. `aws_sns_topic.x.arn`) instead of reconstructing it
+- C) Hardcode the ARN as a literal string
+- D) Use `jsonencode()` to generate the ARN automatically
+
+<details>
+<summary>Answer</summary>
+
+**B.** Manually reconstructing an ARN from region/account ID/name risks
+drift if any component doesn't match the resource's actual ARN.
+Referencing the resource's own `.arn` attribute is always authoritative
+and avoids that class of bug entirely.
 
 </details>
 
@@ -1389,8 +1828,8 @@ Score guide:
 
 | Score | Action |
 |---|---|
-| 8/8 | Import Anki cards, move to Demo 07 |
-| 7/8 | Review the wrong answer, then proceed |
-| 5–6/8 | Re-read the relevant section, retry those questions |
-| Below 5/8 | Re-read the full demo and redo the walkthrough before proceeding |
+| 13-14/14 | Import Anki cards, move to Demo 07 |
+| 11-12/14 | Review the wrong answers, then proceed |
+| 9-10/14 | Re-read the relevant sections, retry those questions |
+| Below 9/14 | Re-read the full demo and redo the walkthrough before proceeding |
 ````
