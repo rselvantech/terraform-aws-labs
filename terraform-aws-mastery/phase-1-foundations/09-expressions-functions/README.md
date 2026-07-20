@@ -143,7 +143,8 @@ Answer from memory before reading further:
 3. Why does `data.aws_ami` require `most_recent = true` when multiple
    images could match the filters?
 
-**Answers**
+<details>
+<summary>Answers</summary>
 
 1. Ask: does removing this block from the configuration destroy
    anything real? If no, it's `data`. If yes, it's `resource`.
@@ -155,6 +156,8 @@ Answer from memory before reading further:
    filters — it never silently picks one for you. `most_recent = true`
    makes the tie-breaking rule explicit rather than leaving ambiguous
    resolution to chance.
+
+</details>
 
 ---
 
@@ -470,7 +473,12 @@ variable "error_pattern" {
 
 ### Step 3 — Create `04-locals.tf` with Part A's `for` expressions
 
-**04-locals.tf (Part A portion):**
+**What this file does in this demo:** every local here derives from
+`var.service_config` alone, in a different shape — this is the file
+Part B extends with collection functions, and Part C's `for_each`
+resources both consume.
+
+**04-locals.tf:**
 
 ```hcl
 locals {
@@ -591,7 +599,12 @@ CloudWatch metric actually counts them.
 
 ### Step 1 — Create `05-log-groups.tf`
 
-**05-log-groups.tf:**
+**What this file does in this demo:** one `aws_cloudwatch_log_group`
+per service, `for_each`-driven directly over `var.service_config` —
+`each.key` becomes the log group's name suffix, `each.value` supplies
+its retention period and tier tag.
+
+Create a file **05-log-groups.tf** and add the below content:
 
 ```hcl
 resource "aws_cloudwatch_log_group" "service" {
@@ -608,7 +621,12 @@ resource "aws_cloudwatch_log_group" "service" {
 
 ### Step 2 — Create `06-metric-filters.tf`
 
-**06-metric-filters.tf:**
+**What this file does in this demo:** one metric filter per log group,
+`for_each`-driven over the same `var.service_config` map — this is
+what makes the demo's result tangible: without this, the log groups
+would sit empty and unverifiable.
+
+Create a file **06-metric-filters.tf** and add the below content:
 
 ```hcl
 resource "aws_cloudwatch_log_metric_filter" "error_count" {
@@ -627,7 +645,11 @@ resource "aws_cloudwatch_log_metric_filter" "error_count" {
 
 ### Step 3 — Create `07-outputs.tf` and apply
 
-**07-outputs.tf:**
+**What this file does in this demo:** exposes every created log
+group's real name, keyed by service — confirming `for_each` produced
+one log group per `service_config` entry, addressable by name.
+
+Create a file **07-outputs.tf** and add the below content:
 
 ```hcl
 output "log_group_names" {
@@ -645,6 +667,17 @@ metric filters).
 
 > ⚠️ Simulated expected output — not from a live terminal run in this
 > environment.
+
+**Verify:**
+
+```
+Console → CloudWatch → Log groups → /cloudnova/auth, /cloudnova/billing,
+  /cloudnova/notifications
+  → all three exist, retention periods match service_config ✅
+Console → CloudWatch → Metrics → CloudNova/Application
+  → authErrorCount, billingErrorCount, notificationsErrorCount all
+    listed (may show "no data" until Step 4 injects real events) ✅
+```
 
 ### Step 4 — Inject real log events
 
@@ -690,6 +723,15 @@ exactly the two injected `ERROR` lines, nothing more, nothing less.
 
 > ⚠️ Simulated expected output — not from a live terminal run in this
 > environment.
+
+**Verify:**
+
+```
+Console → CloudWatch → Metrics → CloudNova/Application → authErrorCount
+  → graph shows a real datapoint of 2 at the time events were injected ✅
+Console → CloudWatch → Log groups → /cloudnova/auth → auth-stream-primary
+  → the three injected log lines (1 INFO, 2 ERROR) are visible directly ✅
+```
 
 > **This is the tangible, verifiable result this demo promised.** The
 > log group, the metric filter, and the pattern match are all real —

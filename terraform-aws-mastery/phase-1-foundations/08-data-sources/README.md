@@ -148,7 +148,8 @@ Answer from memory before reading further:
 3. A sensitive Terraform value is written into an `aws_ssm_parameter`
    with `type = "String"`. Does `terraform plan`/`apply` catch this?
 
-**Answers**
+<details>
+<summary>Answers</summary>
 
 1. `-json` and `-raw` both bypass `sensitive` redaction and show the
    plaintext value. The default `terraform output` and `terraform
@@ -161,6 +162,8 @@ Answer from memory before reading further:
    `sensitive` only affects Terraform's own terminal/plan display; it
    enforces nothing about what resource arguments that value flows
    into afterward.
+
+</details>
 
 ---
 
@@ -483,6 +486,14 @@ Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
 > reads don't count as resources added, changed, or destroyed; they're
 > reads, not managed lifecycle events.
 
+**Verify:**
+
+```
+Console → IAM → Policies → search "AmazonS3ReadOnlyAccess"
+  → confirms this AWS-managed policy exists and its ARN matches
+    `data.aws_iam_policy.s3_read_only.arn` (via `terraform console`) ✅
+```
+
 ---
 
 ## Part B — Conditionally Reading an Existing Resource
@@ -494,7 +505,12 @@ when `count` evaluates to `0`.
 
 ### Step 1 — Create `05-data-s3-legacy.tf`
 
-**05-data-s3-legacy.tf:**
+**What this file does in this demo:** a single `count`-gated `data`
+block — `count` evaluates to `1` only if `var.legacy_bucket_name` is
+non-empty, giving Part B a live example of a data source that may or
+may not actually read anything, depending on input.
+
+Create a file **05-data-s3-legacy.tf** and add the below content:
 
 ```hcl
 data "aws_s3_bucket" "legacy" {
@@ -548,17 +564,19 @@ Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
 > one; the point of this step is the addressing behavior, not requiring
 > you to provision a real legacy bucket.
 
-Now revert to the default (no `legacy_bucket_name`) and try referencing
-index `[0]` directly in an output without a length guard:
-
-```hcl
-output "legacy_bucket_arn_unsafe" {
-  value = data.aws_s3_bucket.legacy[0].arn
-}
-```
+Now revert to the default (no `legacy_bucket_name`) and observe the
+index error directly via `terraform console`, without needing an
+output block at all — `07-outputs.tf` isn't created until Part C, so
+this demonstration deliberately stays in `console` rather than
+requiring a file that doesn't exist yet:
 
 ```bash
 terraform apply
+terraform console
+```
+
+```hcl
+> data.aws_s3_bucket.legacy[0].arn
 ```
 
 Expected:
@@ -581,8 +599,9 @@ Expected:
 > `count`-gated data source's error message tells you *why* the
 > collection is empty.
 
-Remove `legacy_bucket_arn_unsafe` before continuing — it must not
-remain in `07-outputs.tf`.
+```bash
+exit
+```
 
 ---
 
@@ -594,7 +613,12 @@ in this demo.
 
 ### Step 1 — Create `06-data-ami.tf`
 
-**06-data-ami.tf:**
+**What this file does in this demo:** a single `data.aws_ami` block —
+`most_recent = true` plus two `filter` blocks narrow the search to
+exactly one image, an Amazon Linux 2023 AMI, without creating any
+compute resource at all.
+
+Create a file **06-data-ami.tf** and add the below content:
 
 ```hcl
 data "aws_ami" "amazon_linux_2023" {
@@ -615,7 +639,12 @@ data "aws_ami" "amazon_linux_2023" {
 
 ### Step 2 — Create `07-outputs.tf` and apply
 
-**07-outputs.tf:**
+**What this file does in this demo:** exposes everything this demo has
+read across all three Parts — the account ID, the S3 policy ARN, and
+the resolved AMI's ID and creation date — so Step 3 has something to
+cross-verify against a live API call.
+
+Create a file **07-outputs.tf** and add the below content:
 
 ```hcl
 output "current_account_id" {
@@ -641,6 +670,15 @@ output "latest_al2023_ami_creation_date" {
 
 ```bash
 terraform apply
+```
+
+**Verify:**
+
+```
+Console → EC2 → AMI Catalog (or "AMIs" under Images, filtered to "Owned by me" → "Public images")
+  → search for the AMI ID from `terraform output latest_al2023_ami_id`
+  → confirm the name matches al2023-ami-*-x86_64 and the creation
+    date is recent, not stale ✅
 ```
 
 ### Step 3 — Cross-verify the resolved AMI against a real API call
@@ -700,16 +738,16 @@ Destroy complete! Resources: 0 destroyed.
 
 ---
 
-## Cert Tips — TA-004 Objectives Covered
+## Cert Tips — TA-004
 
 ### Exam Objective Mapping
 
 | Demo concept / command | Exam objective | Notes |
 |---|---|---|
-| `data` vs. `resource` distinction | TA-004 Obj 2 (Terraform basics / core concepts) | Frequently tested — "does removing this block destroy anything in AWS?" |
-| `data.aws_iam_policy` by `name` | TA-004 Obj (AWS resource management) | A typo errors at `plan`, not silently |
-| `count` on a `data` block | TA-004 Obj 2 | Same rules as `count` on `resource` — full multiplicity coverage is Demo 10 |
-| `data.aws_ami` `most_recent` | TA-004 Obj (AWS resource management) | Required whenever a filter could match more than one AMI |
+| `data` vs. `resource` distinction | TA-004 Obj 4a (Demonstrate use of resource and data source blocks) | Frequently tested — "does removing this block destroy anything in AWS?" |
+| `data.aws_iam_policy` by `name` | TA-004 Obj 4a (AWS resource management) | A typo errors at `plan`, not silently |
+| `count` on a `data` block | TA-004 Obj 4a | Same rules as `count` on `resource` — full multiplicity coverage is Demo 10 |
+| `data.aws_ami` `most_recent` | TA-004 Obj 4a (AWS resource management) | Required whenever a filter could match more than one AMI |
 
 ### Common Exam Traps
 
@@ -978,15 +1016,16 @@ verifiable result: real log events actually counted by a real metric.
 #deck:Terraform AWS Mastery::Phase 1 - Foundations::08-data-sources
 #separator:Comma
 #columns:Front,Back,Tags
-"What is the core distinction between a data block and a resource block?","A resource block tells Terraform to create, update, and destroy something — full lifecycle management, tracked in state. A data block only reads something that already exists — removing a data block from the configuration never destroys anything in AWS.","demo08,data-sources,ta004"
+"What is the core distinction between a data block and a resource block?","A resource block tells Terraform to create, update, and destroy something — full lifecycle management, tracked in state. A data block only reads something that already exists — removing a data block from the configuration never destroys anything in AWS.","demo08,data-sources,ta004-obj4a"
 "Does data.aws_caller_identity require any arguments?","No — the body is intentionally empty ({}). It makes a single sts:GetCallerIdentity call and returns account_id, arn, and user_id with no input needed.","demo08,data-sources,caller-identity"
-"data.aws_iam_policy has a typo in its name argument. What happens at terraform plan?","It errors immediately with 'no matching IAM policy found' — not a silent empty result. The typo must be fixed before plan succeeds.","demo08,data-sources,break-fix,ta004"
-"Does count work the same way on a data block as it does on a resource block?","Yes — identical rules. count = 0 produces an empty list for that data source; count = 1 produces a single instance addressed as data.x.y[0]. Full multiplicity coverage (for_each, splat) is Demo 10.","demo08,data-sources,count,ta004"
+"data.aws_iam_policy has a typo in its name argument. What happens at terraform plan?","It errors immediately with 'no matching IAM policy found' — not a silent empty result. The typo must be fixed before plan succeeds.","demo08,data-sources,break-fix,ta004-obj4a"
+"Does count work the same way on a data block as it does on a resource block?","Yes — identical rules. count = 0 produces an empty list for that data source; count = 1 produces a single instance addressed as data.x.y[0]. Full multiplicity coverage (for_each, splat) is Demo 10.","demo08,data-sources,count,ta004-obj4a"
 "A count-gated data source has count = 0 in the current plan. A teammate references data.x.y[0].attr directly. What happens?","Error: Invalid index — 'the collection has no elements.' This is the same generic out-of-bounds error any empty-list index access produces, not something data-source-specific. Guard with length(data.x.y) > 0 first.","demo08,data-sources,count,break-fix"
-"Why does data.aws_ami require most_recent = true when multiple AMIs could match the filters?","Without it, data.aws_ami errors if more than one image matches — Terraform never silently picks one for you. most_recent = true makes the tie-breaking rule explicit rather than leaving ambiguous resolution to chance.","demo08,data-sources,ami,ta004"
+"Why does data.aws_ami require most_recent = true when multiple AMIs could match the filters?","Without it, data.aws_ami errors if more than one image matches — Terraform never silently picks one for you. most_recent = true makes the tie-breaking rule explicit rather than leaving ambiguous resolution to chance.","demo08,data-sources,ami,ta004-obj4a"
 "What is the simplest test for whether something belongs in a data block vs. a resource block?","Ask: does removing this block from the configuration destroy anything real? If no, it's data. If yes, it's resource. This is the cleanest way to decide, since data never has lifecycle ownership.","demo08,data-sources,distinction"
 "Why might you use data.aws_iam_policy instead of hardcoding a well-known AWS-managed policy ARN?","Readability/self-documentation (the code says 'the S3 read-only policy' by name, not an opaque ARN), plus it exposes the policy's actual JSON document via .policy if you need to reference specific statements — something a hardcoded ARN string alone can't provide.","demo08,data-sources,iam-policy"
 "What does 'Resources: 0 added, 0 changed, 0 destroyed' mean after applying a configuration made entirely of data blocks?","This is expected and correct — data reads don't count as resources added, changed, or destroyed. They're reads, not managed lifecycle events, so a data-only configuration always reports zero on all three counts.","demo08,data-sources,apply"
+"data.aws_iam_policy requires name or arn. When would you use arn instead of name?","Use arn when the policy name alone could be ambiguous or when you already have the ARN available — arn is a more precise, unambiguous identifier. One of name or arn is required; providing both or neither is invalid.","demo08,data-sources,iam-policy,ta004-obj4a"
 ```
 
 ---
@@ -995,188 +1034,248 @@ verifiable result: real log events actually counted by a real metric.
 
 **08-data-sources-quiz.md:**
 
-```markdown
+````markdown
 # Quiz — Demo 08: Data Sources
 
-> One correct answer per question unless stated otherwise.
+> Question types: True/False, Multiple Choice (1 answer), Multiple
+> Answer (N answers, stated in the question) — matching the real
+> TA-004 exam format.
 > Target: 80% or above before moving to Demo 09.
-> TA-004 exam style.
 
 ---
 
-**Q1.** What is the core distinction between a `data` block and a
-`resource` block?
+**Q1. (True/False)** Removing a `data` block from a Terraform
+configuration destroys the real-world thing it was reading.
 
-A. `data` blocks are faster to apply
-B. `resource` blocks manage full lifecycle (create/update/destroy);
-   `data` blocks only read something that already exists
-C. `data` blocks can only be used with AWS, `resource` blocks work with
-   any provider
-D. There is no meaningful distinction — both behave identically
+- A) True
+- B) False
 
 <details>
 <summary>Answer</summary>
 
-**B.** `resource` blocks are tracked in state and Terraform manages
-their full lifecycle. `data` blocks only read — removing one never
-destroys anything real. **A** is wrong — speed isn't the distinguishing
-factor. **C** is wrong — both `data` and `resource` blocks exist across
-all providers. **D** is wrong — this is precisely the distinction being
-tested.
+**B) False.** `data` blocks never have lifecycle ownership — removing
+one only means Terraform stops reading it on future plans. The real
+resource, wherever it lives, is completely unaffected.
 
 </details>
 
 ---
 
-**Q2.** Does `data.aws_caller_identity` require any arguments?
+**Q2. (Multiple Choice)** What is the fundamental difference between a
+`resource` block and a `data` block?
 
-A. Yes — `account_id` must be specified
-B. Yes — `region` is required
-C. No — the body is intentionally empty
-D. Only `profile` is required
+- A) `resource` blocks are AWS-only; `data` blocks work with any provider
+- B) `resource` blocks manage full lifecycle (create/update/destroy, tracked in state); `data` blocks only read
+- C) `data` blocks always run before `resource` blocks
+- D) There's no real difference — both are interchangeable syntax
 
 <details>
 <summary>Answer</summary>
 
-**C.** `data "aws_caller_identity" "current" {}` — an empty body is
-correct and complete. **A**, **B**, and **D** are all wrong — none of
-these are valid or required arguments; the data source simply reads
-whatever identity the provider is currently authenticated as.
+**B.** This is the core distinction. Both block types exist across
+every provider (A is wrong), and while data sources are often read
+early in the graph, that's a consequence of dependency ordering, not a
+fixed rule (C is wrong).
 
 </details>
 
 ---
 
-**Q3.** `data.aws_iam_policy`'s `name` argument has a typo. What happens
-at `terraform plan`?
+**Q3. (True/False)** `data "aws_caller_identity" "current" {}` is
+incomplete — it requires at least a `region` argument.
 
-A. It silently returns an empty result
-B. It errors immediately with "no matching IAM policy found"
-C. It falls back to a default policy
-D. It only errors at `apply`, not `plan`
+- A) True
+- B) False
 
 <details>
 <summary>Answer</summary>
 
-**B.** The error surfaces immediately at `plan` time, loudly, not
-silently. **A** is wrong — there's no silent-empty-result behavior for
-a nonexistent named policy. **C** is wrong — there's no fallback
-mechanism. **D** is wrong — `data` blocks are read during `plan`, so
-this error appears before `apply` is even considered.
+**B) False.** An empty body is correct and complete for this data
+source — it needs no input at all, and returns the current account ID,
+ARN, and user ID based purely on how the provider is authenticated.
 
 </details>
 
 ---
 
-**Q4.** A `data` block has `count = 0` in the current plan. What does
-`data.x.y` become?
+**Q4. (Multiple Choice)** `data.aws_iam_policy` requires which of the
+following?
 
-A. `null`
-B. An empty list
-C. An error is raised immediately at `plan`
-D. A list with one `null` element
+- A) Both `name` and `arn` together
+- B) Neither `name` nor `arn` — it reads the account's default policy
+- C) Exactly one of `name` or `arn`
+- D) Only `arn` — `name` isn't a valid argument
 
 <details>
 <summary>Answer</summary>
 
-**B.** `count = 0` produces an empty list for that data source —
-identical to how `count = 0` behaves on a `resource` block. **A** is
-wrong — it's an empty list, not `null`. **C** is wrong — `count = 0`
-itself is valid and doesn't error; only referencing `[0]` on the
-resulting empty list would error. **D** is wrong — there's no
-placeholder `null` element; the list is genuinely empty (length 0).
+**C.** One of the two identifies which policy to read — providing both
+or neither is invalid. `arn` is useful when a name alone could be
+ambiguous; `name` is more readable for well-known AWS-managed policies.
 
 </details>
 
 ---
 
-**Q5.** Referencing `data.aws_s3_bucket.legacy[0].arn` when `count`
-evaluated to `0`. What happens?
+**Q5. (Multiple Choice)** `data.aws_iam_policy`'s `name` argument has a
+typo that doesn't match any real policy. What happens?
 
-A. Returns `null`
-B. Returns an empty string
-C. Errors: "Invalid index — the collection has no elements"
-D. Silently skips this output only
+- A) Silently resolves to an empty result
+- B) Errors immediately at `plan` time: "no matching IAM policy found"
+- C) Falls back to a default AWS-managed policy
+- D) Only errors at `apply`, never at `plan`
 
 <details>
 <summary>Answer</summary>
 
-**C.** This is a genuine out-of-bounds index error — the same class of
-error any empty-list `[0]` access produces, not something specific to
-data sources. **A** and **B** are wrong — Terraform doesn't return a
-placeholder value for invalid indices; it errors. **D** is wrong —
-there's no per-output silent-skip behavior; the error blocks the
-`plan`/`apply` entirely.
+**B.** This fails loudly and immediately during `plan`'s refresh step —
+data source reads happen at plan time, so a nonexistent-policy error
+surfaces well before `apply` would even be considered.
 
 </details>
 
 ---
 
-**Q6.** Why does `data.aws_ami` require `most_recent = true` when
-multiple AMIs could match the given filters?
+**Q6. (Multiple Answer — Pick the 2 correct responses)** Which TWO
+statements about `count` on a `data` block are correct?
 
-A. It's purely cosmetic and has no functional effect
-B. Without it, Terraform errors if more than one AMI matches — it
-   never silently picks one
-C. It's required syntax with no semantic meaning
-D. It makes the lookup faster
+- A) `count = 0` produces `null` for that data source
+- B) `count = 0` produces an empty list for that data source
+- C) Indexing `[0]` on a `count = 0` data source errors with "Invalid index"
+- D) `data` blocks don't support the `count` meta-argument at all
+- E) `count` behaves fundamentally differently on `data` blocks than on `resource` blocks
 
 <details>
 <summary>Answer</summary>
 
-**B.** `most_recent = true` makes the tie-breaking rule explicit.
-Without it, ambiguous matches (more than one AMI) cause an error rather
-than an implicit, unpredictable choice. **A** is wrong — it has a real
-functional effect on ambiguous-match resolution. **C** is wrong — it
-carries genuine semantic meaning. **D** is wrong — it doesn't affect
-lookup performance, only tie-breaking behavior.
+**B and C.** `count = 0` produces a genuinely empty list (not `null`),
+and indexing `[0]` into that empty list produces the same generic
+out-of-bounds error any empty-list index access would. `count` works
+identically on `data` and `resource` blocks (E is wrong), and `data`
+blocks fully support it (D is wrong).
 
 </details>
 
 ---
 
-**Q7.** What is the simplest test for whether something belongs in a
-`data` block instead of a `resource` block?
+**Q7. (Multiple Choice)** What kind of error does `data.aws_s3_bucket.legacy[0].arn`
+produce when `count` evaluated to `0`?
 
-A. Whether it costs money
-B. Whether removing the Terraform block would destroy the real thing
-C. Whether it's an AWS-managed vs. customer-managed resource
-D. Whether it was created before or after this Terraform configuration existed
+- A) A data-source-specific error naming the missing bucket
+- B) A generic "Invalid index — the collection has no elements" error, the same as any out-of-bounds list access
+- C) `null`, silently
+- D) A warning, but the plan still succeeds
 
 <details>
 <summary>Answer</summary>
+
+**B.** Nothing about this error is specific to data sources — it's the
+identical error any list literal's out-of-bounds index would produce.
+This is exactly why the error message alone doesn't explain *why* the
+list is empty; that requires checking what drives `count`.
+
+</details>
+
+---
+
+**Q8. (Multiple Choice)** A `data.aws_ami` block's filters could match
+three different AMIs, and `most_recent` is not set. What happens?
+
+- A) Terraform picks the newest one automatically
+- B) Terraform picks the first one returned by the API
+- C) Terraform errors — ambiguous matches require an explicit tie-breaking rule
+- D) Terraform returns all three as a list
+
+<details>
+<summary>Answer</summary>
+
+**C.** Without `most_recent = true`, ambiguous filter matches cause an
+error rather than an implicit choice — consistent with Terraform's
+general avoidance of silent, unpredictable resolution.
+
+</details>
+
+---
+
+**Q9. (Multiple Choice)** Why does `data.aws_ami` typically include
+`owners = ["amazon"]` alongside its `filter` blocks?
+
+- A) It's required syntax with no functional effect
+- B) It restricts results to images published by a specific trusted account, avoiding unrelated matches from other accounts
+- C) It determines which region the AMI is looked up in
+- D) It sets the price tier of the resulting AMI
+
+<details>
+<summary>Answer</summary>
+
+**B.** AMI names aren't globally unique across AWS accounts — without
+restricting `owners`, a `name` filter pattern could theoretically match
+images published by unrelated accounts. Scoping to a trusted owner (like
+`"amazon"` for AWS-published images) keeps the match meaningful.
+
+</details>
+
+---
+
+**Q10. (Multiple Choice)** A configuration made entirely of `data`
+blocks is applied. What does `Resources: 0 added, 0 changed, 0
+destroyed` mean?
+
+- A) The apply failed
+- B) This is expected — reads don't count toward the resource tally, even though the data was successfully read
+- C) No data sources were actually read
+- D) All data sources returned empty results
+
+<details>
+<summary>Answer</summary()>
+
+**B.** The apply succeeds and the data is genuinely read (visible in
+the "Reading.../Read complete" log lines) — it just never counts as
+added, changed, or destroyed, since those three counters track only
+lifecycle-managed `resource` blocks.
+
+</details>
+
+---
+
+**Q11. (Multiple Choice)** What is the simplest test for deciding
+whether something belongs in a `data` block or a `resource` block?
+
+- A) Whether it costs money
+- B) Whether removing the Terraform block would destroy the real thing
+- C) Whether AWS or Terraform created it originally
+- D) Whether it's referenced by other resources
+
+<details>
+<summary>Answer</summary()>
 
 **B.** If deleting the code should NOT delete the real thing, it's
-`data`. If it should, it's `resource`. **A** is wrong — cost has no
-bearing on this distinction. **C** is wrong — AWS-managed vs.
-customer-managed is a separate axis (e.g., you can have a `resource`
-for a customer-managed policy). **D** is wrong, though tempting — while
-`data` is often used for pre-existing things, the deciding factor is
-lifecycle ownership, not simply creation order.
+`data`. If it should, it's `resource`. Cost (A), original creator (C),
+and whether other resources reference it (D) are all unrelated to this
+decision.
 
 </details>
 
 ---
 
-**Q8.** After applying a configuration made entirely of `data` blocks,
-what does `Apply complete! Resources: 0 added, 0 changed, 0 destroyed`
-mean?
+**Q12. (Multiple Choice)** Beyond avoiding a hardcoded ARN string, what
+practical capability does `data.aws_iam_policy` give you that a
+hardcoded ARN alone doesn't?
 
-A. The apply failed silently
-B. This is expected — data reads don't count as resources added, changed, or destroyed
-C. Terraform detected no data sources to read
-D. All data sources returned empty results
+- A) The ability to modify the policy
+- B) Access to the policy's actual JSON document via `.policy`, for inspecting or referencing specific statements
+- C) Automatic versioning of the policy
+- D) The ability to attach the policy without any IAM permissions
 
 <details>
-<summary>Answer</summary>
+<summary>Answer</summary()>
 
-**B.** This is the correct, expected outcome for a data-only
-configuration — reads aren't lifecycle events. **A** is wrong — the
-apply succeeded; "0 added" doesn't indicate failure. **C** is wrong —
-the data sources were read (visible in the "Reading.../Read complete"
-lines); they just don't count toward the resource tally. **D** is
-wrong — the data sources can return real, non-empty results while
-still reporting zero on all three resource counts.
+**B.** `.policy` returns the actual JSON policy document as a string —
+useful if you need to inspect or extract details from it. A hardcoded
+ARN gives you a string to attach elsewhere, but no visibility into the
+policy's actual content. `data` sources never grant modification
+ability (A) — that would require a `resource`, and AWS-managed
+policies can't be edited regardless.
 
 </details>
 
@@ -1186,8 +1285,8 @@ Score guide:
 
 | Score | Action |
 |---|---|
-| 8/8 | Import Anki cards, move to Demo 09 |
-| 7/8 | Review the wrong answer, then proceed |
-| 6/8 | Re-read the relevant section, retry those questions |
-| Below 6/8 | Re-read the full demo and redo the walkthrough before proceeding |
-```
+| 11-12/12 | Import Anki cards, move to Demo 09 |
+| 9-10/12 | Review the wrong answers, then proceed |
+| 7-8/12 | Re-read the relevant sections, retry those questions |
+| Below 7/12 | Re-read the full demo and redo the walkthrough before proceeding |
+````
