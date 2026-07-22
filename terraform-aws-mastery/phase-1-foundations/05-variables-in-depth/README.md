@@ -52,6 +52,52 @@ parameterise it: values that change per environment enter as variables.
 
 ---
 
+## How This Demo's Pieces Fit Together
+
+**The AWS solution being built:** one IAM role (`aws_iam_role.deploy`)
+with one inline permission policy (`aws_iam_role_policy.deploy`) — a
+CI/CD deploy role. Nothing else exists yet; the SNS topic, SSM
+parameter, and everything AWS-related in later demos all attach to
+this same role's identity.
+
+**How the pieces connect:**
+- `data.aws_caller_identity.current` reads the calling AWS account
+  (via a real `sts:GetCallerIdentity` API call) — its `account_id` is
+  the fallback used in the role's **trust policy** whenever
+  `var.trusted_account_ids` is left empty
+- The **trust policy** (`assume_role_policy`) controls *who* may call
+  `sts:AssumeRole` on this role — built from `local.trusted_principals`,
+  which is itself built from `var.trusted_account_ids`
+- The **inline permission policy** controls *what* the role can do once
+  assumed — built from `var.allowed_actions` (`s3:GetObject`,
+  `s3:PutObject`, `s3:ListBucket`)
+- These are two independent AWS objects attached to the same role:
+  changing `var.trusted_account_ids` only affects who can assume it;
+  changing `var.allowed_actions` only affects what it can do — neither
+  variable touches the other's policy
+
+**This isn't three alternative solutions — it's one variable set,
+examined three ways:**
+- **Part A** declares the complete variable set and builds the actual
+  role and both its policies from those variables
+- **Part B** doesn't touch the variables or the AWS resources at all —
+  it changes *how values reach the same declarations* (CLI flag, file,
+  environment variable, default), and shows the real, consequence:
+  changing `environment` forces the role to be destroyed and recreated
+  under a new name, since AWS has no "rename a role" API
+- **Part C** also doesn't add new AWS resources — it deliberately
+  supplies invalid or sensitive values to the same variables, proving
+  the constraints from Part A (`validation`, `sensitive`, `ephemeral`)
+  actually block bad input and protect sensitive values under real
+  conditions, before any AWS API call is made
+
+By the end, one role with two policies has been built once (Part A),
+proven to respond correctly to every value-precedence source (Part B),
+and proven to reject bad input / protect sensitive input (Part C) —
+one AWS solution, three kinds of scrutiny.
+
+---
+
 ## Prerequisites
 
 ### Knowledge

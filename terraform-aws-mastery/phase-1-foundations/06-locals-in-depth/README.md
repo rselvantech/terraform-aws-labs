@@ -53,6 +53,53 @@ IAM-specific trick.
 
 ---
 
+## How This Demo's Pieces Fit Together
+
+**The AWS solution being built:** the same IAM role from Demo 05,
+refined — plus a brand-new, unrelated resource: an SNS topic
+(`aws_sns_topic.deploy_notifications`) that CI/CD pipelines publish
+deploy notifications to.
+
+**How the pieces connect — this is the real point of the demo:**
+- `local.name_prefix` (built once, from `var.project`/`var.environment`)
+  names **both** the IAM role and the SNS topic — same computed value,
+  two unrelated AWS resources
+- `local.trusted_principals` (built once, from `var.trusted_account_ids`
+  or the calling account's own ID) is the **Principal** in **two
+  separate policy documents**: the IAM role's trust policy (`sts:AssumeRole`)
+  and the SNS topic's resource policy (`sns:Publish`) — the same list of
+  trusted account ARNs controls who can assume the role AND who can
+  publish to the topic
+- `local.common_tags` (built once, `merge()`-composed from defaults +
+  `var.extra_tags`) tags **both** resources identically via the
+  provider's `default_tags` block — a tag change in one place ripples
+  to both
+- The SNS topic's own `local.sns_tags` adds exactly one extra tag
+  (`Purpose = "deploy-notifications"`) on top of `local.common_tags` —
+  this is the one point where the two resources' tag sets diverge, and
+  it's a deliberate `merge()`, not an accident
+
+**Progression across the three Parts:**
+- **Part A** recreates Demo 05's finished role as a working baseline —
+  no new AWS resources yet
+- **Part B** extends the *same* locals block with `try()`, `coalesce()`,
+  and `merge()` — still only the IAM role, now with a caller-overridable
+  description, session duration, and tag set
+- **Part C** is the demo's actual thesis: it takes the locals already
+  refined in Part B and reuses them, unmodified, to build the SNS
+  topic — a second AWS resource, in a completely different service,
+  sharing its name, its trust list, and its base tags with the first
+
+If `local.trusted_principals` or `local.name_prefix` were somehow
+IAM-specific, reusing them for the SNS topic would require rewriting
+or fail outright; instead they work unchanged. That's the concrete,
+cross-service proof this demo is making — not just "locals can be
+reused," but specifically that the same computed values legitimately
+drive two unrelated AWS services' security policies and naming at
+once.
+
+---
+
 ## Prerequisites
 
 ### Knowledge
