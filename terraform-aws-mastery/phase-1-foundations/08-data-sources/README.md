@@ -53,6 +53,34 @@ not what you do with their output afterward.
 
 ---
 
+## How This Demo's Pieces Fit Together
+
+**The AWS footprint of this demo: nothing is created.** Every block
+across all three Parts is `data` — this is the one demo in the series
+where the honest answer to "what resources does this build" is zero.
+That's the point: Parts A, B, and C aren't building toward one
+integrated solution the way Demos 06/07/09 do; they're three
+independent demonstrations of the same underlying idea — reading
+existing infrastructure without taking ownership of it — applied to
+three unrelated AWS services (IAM, S3, EC2/AMI).
+
+**What connects them, if not shared resources:**
+- Part A's `data.aws_caller_identity` resolves the account ID
+  (`163125980376`, fixed throughout this series) that implicitly
+  scopes every ARN referenced elsewhere in this demo
+- Part B's `count`-gated `data.aws_s3_bucket` and Part C's
+  `data.aws_ami` are otherwise unrelated to each other and to Part
+  A — each demonstrates a different *pattern* (conditional reads,
+  filtered lookups), not a shared piece of infrastructure
+- The throughline is conceptual, not architectural: every read in this
+  demo answers "does this already exist, and what does it look like?"
+  — never "let's build something that depends on it." Demo 10 is
+  where reading (via `data.aws_vpc`) finally feeds directly into
+  something newly created (the security group) — this demo is
+  deliberately read-only, start to finish.
+
+---
+
 ## Prerequisites
 
 ### Knowledge
@@ -152,9 +180,8 @@ Answer from memory before reading further:
 <summary>Answers</summary>
 
 1. `-json` and `-raw` both bypass `sensitive` redaction and show the
-   plaintext value. The default `terraform output` and `terraform
-   output NAME` (without `-json`/`-raw`) still redact to `(sensitive
-   value)`.
+   plaintext value, including `terraform output NAME` (without `-json`/`-raw`).
+   Only `terraform output` redact to `(sensitive value)`.
 2. Read-only access to that configuration's outputs, via its state
    file — nothing more. There's no write path through remote state,
    and no access to the source configuration's `.tf` files at all.
@@ -232,7 +259,7 @@ accepted. Makes a single `sts:GetCallerIdentity` API call.
 | Attribute | Example value | Description |
 |---|---|---|
 | `account_id` | `"163125980376"` | AWS account ID of the calling identity |
-| `arn` | `"arn:aws:iam::163125980376:user/wadmin"` | Full ARN of the caller |
+| `arn` | `"arn:aws:iam::163125980376:user/deploy-admin"` | Full ARN of the caller |
 | `user_id` | `"AIDAXXXXXXXXXXXXXXXXX"` | Unique identifier of the caller |
 
 **Why this belongs in `data`, not a variable:** the account ID is
@@ -299,6 +326,11 @@ value = length(data.aws_s3_bucket.legacy) > 0 ? data.aws_s3_bucket.legacy[0].arn
 > resources** (full coverage in Demo 10) — a `data` block with `count`
 > follows identical rules. Referencing `[0]` when `count` evaluated to
 > `0` is a real, common error, diagnosed directly in Break-Fix below.
+
+> **What `data.aws_s3_bucket` actually reads:** bucket-level metadata
+> (region, whether it exists at all) — not the objects inside it. This
+> demo never lists or reads any file from the bucket; it only confirms
+> the bucket itself exists and resolves its properties.
 
 ---
 
@@ -534,15 +566,38 @@ terraform console
 
 ```hcl
 > length(data.aws_s3_bucket.legacy)
-0
+(known after apply)
 > data.aws_s3_bucket.legacy
-[]
+(known after apply)
 ```
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
+> ✅ Verified against a live run. **If you see `(known after apply)`
+> instead of `0`/`[]`,** this means `terraform console` is checking a
+> data source that hasn't been created yet.Here, there is s3 bucket
+> named(`bucket=""`) exist.
 
-### Step 3 — Apply with the variable set, and observe the index trap
+### Step 3 — Create the legacy bucket, then apply with the variable set
+
+This Part B's  `data.aws_s3_bucket.legacy` read only succeeds if a real
+bucket with this exact name already exists — `data` blocks never
+create anything, so unlike every other resource in this series, there
+is no `apply` that will make this bucket appear for you.
+
+```bash
+aws s3api create-bucket \
+  --bucket cloudnova-legacy-uploads \
+  --region us-east-2 \
+  --create-bucket-configuration LocationConstraint=us-east-2 \
+  --profile default
+```
+
+Now apply with the variable set:
+
+```bash
+terraform apply -var="legacy_bucket_name=cloudnova-legacy-uploads"
+```
+
+### Step 4 — Apply with the variable set, and observe the index trap
 
 ```bash
 terraform apply -var="legacy_bucket_name=cloudnova-legacy-uploads"
@@ -558,39 +613,45 @@ data.aws_s3_bucket.legacy[0]: Read complete after 0s [id=cloudnova-legacy-upload
 Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
 ```
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment. If no such bucket exists in your account, this errors
-> with "NoSuchBucket" instead — that's expected if you haven't created
-> one; the point of this step is the addressing behavior, not requiring
-> you to provision a real legacy bucket.
-
-Now revert to the default (no `legacy_bucket_name`) and observe the
-index error directly via `terraform console`, without needing an
+Now observe the index error directly via `terraform console`, without needing an
 output block at all — `07-outputs.tf` isn't created until Part C, so
 this demonstration deliberately stays in `console` rather than
 requiring a file that doesn't exist yet:
 
 ```bash
-terraform apply
 terraform console
 ```
 
 ```hcl
+> length(data.aws_s3_bucket.legacy)
+1
+> data.aws_s3_bucket.legacy
+[
+  {
+    "arn" = "arn:aws:s3:::cloudnova-legacy-uploads"
+    "bucket" = "cloudnova-legacy-uploads"
+    "bucket_domain_name" = "cloudnova-legacy-uploads.s3.amazonaws.com"
+    "bucket_region" = "us-east-2"
+    "bucket_regional_domain_name" = "cloudnova-legacy-uploads.s3.us-east-2.amazonaws.com"
+    "hosted_zone_id" = "Z2O1EMRO9K5GLX"
+    "id" = "cloudnova-legacy-uploads"
+    "region" = "us-east-2"
+    "website_domain" = tostring(null)
+    "website_endpoint" = tostring(null)
+  },
+]
 > data.aws_s3_bucket.legacy[0].arn
-```
-
-Expected:
-
-```
+"arn:aws:s3:::cloudnova-legacy-uploads"
+> data.aws_s3_bucket.legacy[1].arn
 ╷
 │ Error: Invalid index
-│   The given key does not identify an element in this collection value:
-│   the collection has no elements.
+│ 
+│   on <console-input> line 1:
+│   (source code not available)
+│ 
+│ The given key does not identify an element in this collection value: the given index is greater than or equal to the length of the collection.
 ╵
 ```
-
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
 
 > **This error message is generic ("collection has no elements"), not
 > specific to `count` or data sources** — it's the same "Invalid index"
@@ -607,9 +668,21 @@ exit
 
 ## Part C — Reading Compute Metadata
 
+**What's new here: Amazon EC2 AMIs.** An AMI (Amazon Machine Image) is
+the template EC2 uses to launch an instance — the OS, base
+configuration, and pre-installed software baked into a bootable image.
+AWS and third parties publish new AMIs constantly (security patches,
+new OS versions), so a hardcoded AMI ID goes stale almost immediately.
+This demo needs a way to always resolve "whatever the current Amazon
+Linux 2023 image is" without hardcoding an ID that will be outdated
+within weeks — which is exactly what `data.aws_ami` provides, staying
+consistent with this demo's read-only theme since no EC2 instance is
+actually launched.
+
 **What you accomplish in Part C:** look up the latest Amazon Linux
 2023 AMI ID, entirely read-only — no EC2 instance is created anywhere
 in this demo.
+
 
 ### Step 1 — Create `06-data-ami.tf`
 
@@ -686,15 +759,21 @@ Console → EC2 → AMI Catalog (or "AMIs" under Images, filtered to "Owned by m
 ```bash
 aws ec2 describe-images \
   --image-ids "$(terraform output -raw latest_al2023_ami_id)" \
-  --query "Images[0].[Name,CreationDate]" --output text
+  --query "Images[0].[Name,CreationDate]" --output text \
+  --profile default --region us-east-2
 ```
 
 Expected: the name and creation date match `terraform output
 latest_al2023_ami_creation_date` — confirming `data.aws_ami` resolved
 to a real, current image, not a stale or hardcoded one.
 
-> ⚠️ Simulated expected output — not from a live terminal run in this
-> environment.
+> ✅ Verified against a live run. **Omitting `--profile`/`--region`
+> here can fail with a confusing `InvalidAMIID.NotFound`, even though
+> the AMI genuinely exists** — the CLI silently resolves a different
+> region/profile than the one Terraform actually used, and an AMI ID
+> that's valid in `us-east-2` won't be found by a CLI call quietly
+> defaulting elsewhere. Always pass both flags explicitly, matching
+> what the `.tf` files use.
 
 ---
 
@@ -738,7 +817,7 @@ Destroy complete! Resources: 0 destroyed.
 
 ---
 
-## Cert Tips — TA-004
+## Cert Tips
 
 ### Exam Objective Mapping
 
@@ -911,7 +990,7 @@ output "legacy_bucket_arn" {
 `terraform plan` errors: "no matching IAM policy found" — `name` is
 missing the final `s` (`AmazonS3ReadOnlyAcces` instead of
 `AmazonS3ReadOnlyAccess`). Fix: correct the exact policy name — verify
-against `aws iam list-policies --scope AWS` if unsure.
+against `aws iam list-policies --scope AWS --profile default --region us-east-2` if unsure.
 
 **Error 2 — nonexistent attribute reference**
 `terraform plan` errors that `image_name` is not a valid attribute on
@@ -923,7 +1002,13 @@ With `legacy_bucket_name` left at its default `""`, `count` evaluates
 to `0`, so `data.aws_s3_bucket.legacy` is an empty list. Referencing
 `[0]` errors: "Invalid index — the collection has no elements." Fix:
 guard with `length(data.aws_s3_bucket.legacy) > 0 ?
-data.aws_s3_bucket.legacy[0].arn : null`.
+data.aws_s3_bucket.legacy[0].arn : null` — or, as an equally valid fix,
+supply a real `legacy_bucket_name` so `count` genuinely evaluates to
+`1`.
+
+> ✅ Verified against a live run — exact error text: "The given key
+> does not identify an element in this collection value: the
+> collection has no elements."
 
 </details>
 
@@ -989,11 +1074,11 @@ The ARN for AWS-managed policies is actually predictable and stable (`arn:aws:ia
 
 | Command | Description |
 |---|---|
-| `aws iam list-policies --scope AWS \| grep -i NAME` | Confirms the exact spelling of an AWS-managed policy name |
+| `aws iam list-policies --scope AWS --profile default --region us-east-2 \| grep -i NAME` | Confirms the exact spelling of an AWS-managed policy name |
 | `terraform console` | Interactively check a `count`-gated data source's length/contents |
 | `length(data.x.y)` | Returns `0` or `1` for a `count`-gated data source — guard indexing with this |
-| `aws ec2 describe-images --image-ids ID` | Cross-verifies a `data.aws_ami` result against the live API |
-| `aws s3 ls \| grep NAME` | Confirms an S3 bucket name before referencing it in `data.aws_s3_bucket` |
+| `aws ec2 describe-images --image-ids ID --profile default --region us-east-2` | Cross-verifies a `data.aws_ami` result against the live API |
+| `aws s3 ls --profile default --region us-east-2 \| grep NAME` | Confirms an S3 bucket name before referencing it in `data.aws_s3_bucket` |
 
 ---
 
