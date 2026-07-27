@@ -72,6 +72,28 @@ your first hands-on proof that Terraform works.
 
 ---
 
+## How This Demo's Pieces Fit Together
+
+**This demo builds no AWS solution at all** — deliberately. Its only
+"infrastructure" is a `random_string` and a `local_file`, chosen
+specifically so the full Terraform workflow (init → validate → fmt →
+plan → apply → destroy) can be learned with zero cost, zero AWS
+account, and zero risk, before AWS enters the picture in Demo 01.
+
+**How the six Parts build toward that one lab:** Parts 1–3 (What is
+IaC, Terraform vs. alternatives, Architecture) establish *why* this
+tool and workflow exist before touching syntax at all. Part 4 (HCL)
+teaches the language the Lab is written in. Part 5 (`terraform
+console`) lets you test HCL expressions the Lab will use, without
+running the Lab yet. Part 6 (The Workflow) explains exactly what each
+CLI command does to your filesystem and state *before* you run any of
+them for real. By the time the Lab starts, every command, every block
+type, and every value type it uses has already been explained in
+isolation — the Lab's only job is to show them working together for
+the first time, on the cheapest possible resources.
+
+---
+
 ## Prerequisites
 
 ### Knowledge

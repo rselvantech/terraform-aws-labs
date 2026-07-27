@@ -17,7 +17,7 @@ immediate rather than spread across separate demos.
 **Real-world scenario — CloudNova:** three dead-letter queues (position
 doesn't matter — `count`), three per-environment buckets and two IAM
 users (identity matters — `for_each`), and a security group with a
-caller-supplied number of ingress rules (repeating a *nested block*
+caller-supplied number of ingress rules (repeating a _nested block_
 inside one resource — `dynamic`).
 
 **What this demo builds:**
@@ -39,11 +39,12 @@ inside one resource — `dynamic`).
 ```
 
 **What this demo covers:**
+
 - `count` and `count.index` — index-based resource multiplicity
 - `for_each` and `each.key`/`each.value` — key-based resource multiplicity
 - `toset()` — converting a list to the set `for_each` requires
 - Splat expressions (`[*]`) — collecting one attribute across instances
-- `dynamic` blocks — repeating a *nested block inside one resource*,
+- `dynamic` blocks — repeating a _nested block inside one resource_,
   contrasted directly against `for_each` on a whole resource
 - `data.aws_vpc` — supplying the security group's `vpc_id`
 - The `count`/`for_each`/`dynamic`/single-resource decision framework
@@ -69,11 +70,12 @@ need, and how should each instance be addressed?" — answered three
 different ways, once per mechanism.
 
 **The AWS objects, and why each uses the mechanism it does:**
+
 - **Part A's 3 SQS queues** use `count` because none of them has a
   meaningful identity beyond "one of three" — position is all that
   distinguishes them
 - **Part B's S3 buckets and IAM users** use `for_each` because each
-  instance *does* have a real, stable identity (an environment name, a
+  instance _does_ have a real, stable identity (an environment name, a
   username) that must survive if another instance is added or removed
 - **Part C's security group** uses neither `count` nor `for_each` on
   itself — it's a single resource — but uses a `dynamic` block
@@ -84,11 +86,11 @@ different ways, once per mechanism.
 **The connective tissue is the decision framework in Concepts**, not
 shared data: this demo's real teaching point is choosing correctly
 between these four options (`count`, `for_each`, `dynamic`, or a
-single resource) for a *new* scenario, not tracing how these
+single resource) for a _new_ scenario, not tracing how these
 particular resources depend on one another — because they don't.
 
 > **A note on the security group's access model:** the `dynamic
-> "ingress"` block's rules are CIDR-based (network-level access
+"ingress"` block's rules are CIDR-based (network-level access
 > control) — a completely different mechanism from the IAM trust/
 > permission policies covered in Demos 06–07. Don't conflate the two:
 > nothing about a security group's ingress rules involves an IAM
@@ -105,6 +107,7 @@ particular resources depend on one another — because they don't.
 ## Prerequisites
 
 ### Knowledge
+
 - Demo 09 completed — `for` expressions and collection functions,
   since `for_each`'s map inputs in this demo build directly on that
 
@@ -157,13 +160,13 @@ By the end of this demo you will be able to:
 
 ## Cost & Free Tier
 
-| Resource | Free tier | Cost | Notes |
-|---|---|---|---|
+| Resource                  | Free tier                        | Cost      | Notes                          |
+| ------------------------- | -------------------------------- | --------- | ------------------------------ |
 | SQS queues (×3, standard) | Free forever — 1M requests/month | **$0.00** | Well under free tier for a lab |
-| S3 buckets (×3, empty) | Free for the buckets themselves | **$0.00** | No objects uploaded |
-| IAM users (×2) | Always free | **$0.00** | |
-| Security group | Always free | **$0.00** | |
-| **Session total** | | **$0.00** | |
+| S3 buckets (×3, empty)    | Free for the buckets themselves  | **$0.00** | No objects uploaded            |
+| IAM users (×2)            | Always free                      | **$0.00** |                                |
+| Security group            | Always free                      | **$0.00** |                                |
+| **Session total**         |                                  | **$0.00** |                                |
 
 > Always run cleanup at the end of the session.
 
@@ -208,12 +211,12 @@ Answer from memory before reading further:
    `[for x in collection : value]`. Map-producing uses curly braces
    and `=>`: `{for x in collection : key => value}`. Mixing the two
    (brackets with `=>`) is a syntax error.
-2. Last-write-wins, silently — only the last-processed element's value
-   survives for that key; the earlier one is overwritten with no
-   error. Adding `...` after the value expression collects all matches
-   into a list instead.
+2. Terraform raises a duplicate object key error. In a map-producing
+   for expression, every generated key must be unique unless grouping
+   mode is enabled with the ... suffix. Adding ... after the value expression
+   tells Terraform to collect all values for the same key into a list instead of raising an error.
 3. `map["key"]` errors if the key doesn't exist. `lookup(map, "key",
-   default)` returns the default instead of erroring — use it when a
+default)` returns the default instead of erroring — use it when a
    missing key is expected and should degrade gracefully.
 
 </details>
@@ -224,24 +227,24 @@ Answer from memory before reading further:
 
 ### What's New in This Demo
 
-| Construct | Type | Purpose in this demo |
-|---|---|---|
-| `count` | Resource meta-argument | Create N identical instances, indexed 0 to N-1 |
-| `count.index` | Expression | The current instance's index inside a `count`-driven resource |
-| `for_each` | Resource meta-argument | Create one instance per key in a map, or per value in a set |
-| `each.key` / `each.value` | Expression | The current instance's key/value inside a `for_each`-driven resource |
-| `toset()` | Built-in function | Converts a list to a set — required when `for_each` needs a set but you have a list |
-| Splat expression `[*]` | Expression | Collects one attribute across every instance into a single list |
-| `dynamic` block | Language construct | Repeats a nested block *within one resource*, based on a collection |
-| `data.aws_vpc` | Data source | Reads the default (or specified) VPC, supplying `vpc_id` to the security group |
+| Construct                 | Type                   | Purpose in this demo                                                                |
+| ------------------------- | ---------------------- | ----------------------------------------------------------------------------------- |
+| `count`                   | Resource meta-argument | Create N identical instances, indexed 0 to N-1                                      |
+| `count.index`             | Expression             | The current instance's index inside a `count`-driven resource                       |
+| `for_each`                | Resource meta-argument | Create one instance per key in a map, or per value in a set                         |
+| `each.key` / `each.value` | Expression             | The current instance's key/value inside a `for_each`-driven resource                |
+| `toset()`                 | Built-in function      | Converts a list to a set — required when `for_each` needs a set but you have a list |
+| Splat expression `[*]`    | Expression             | Collects one attribute across every instance into a single list                     |
+| `dynamic` block           | Language construct     | Repeats a nested block _within one resource_, based on a collection                 |
+| `data.aws_vpc`            | Data source            | Reads the default (or specified) VPC, supplying `vpc_id` to the security group      |
 
 **Related constructs worth knowing (not used in full here):**
 
-| Construct | What it is | Where it's covered in full |
-|---|---|---|
-| `resource[0]` / `resource["key"]` state addressing | Instance addressing syntax | Demo 11 |
-| `moved` block | Migrating between `count`/`for_each` without destroy/recreate | Demo 11 |
-| `terraform state list` index/key filtering | Targeting individual instances from the CLI | Demo 11 |
+| Construct                                          | What it is                                                    | Where it's covered in full |
+| -------------------------------------------------- | ------------------------------------------------------------- | -------------------------- |
+| `resource[0]` / `resource["key"]` state addressing | Instance addressing syntax                                    | Demo 11                    |
+| `moved` block                                      | Migrating between `count`/`for_each` without destroy/recreate | Demo 11                    |
+| `terraform state list` index/key filtering         | Targeting individual instances from the CLI                   | Demo 11                    |
 
 ---
 
@@ -342,7 +345,7 @@ expression.
 
 #### `dynamic` Blocks — Repeating a Nested Block Within One Resource
 
-Every construct so far in this demo repeats a *whole resource*. A
+Every construct so far in this demo repeats a _whole resource_. A
 `dynamic` block is different: it repeats a **nested block inside a
 single resource**, based on a collection.
 
@@ -392,18 +395,18 @@ dynamic "ingress" {
 These three are easy to conflate because all three are "loop over
 something in Terraform." They operate at different scopes:
 
-| | Repeats | Addressed by | Typical use |
-|---|---|---|---|
-| `count` | The entire resource block | Integer index (`[0]`) | N identical/near-identical resources, position doesn't carry meaning |
-| `for_each` | The entire resource block | Map key or set value (`["prod"]`) | N resources with a meaningful, stable identity per instance |
-| `dynamic` | One nested block *inside* a single resource | N/A — not a separate resource instance | A variable number of repeated sub-blocks (e.g. `ingress {}`) within one resource |
+|            | Repeats                                     | Addressed by                           | Typical use                                                                      |
+| ---------- | ------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------- |
+| `count`    | The entire resource block                   | Integer index (`[0]`)                  | N identical/near-identical resources, position doesn't carry meaning             |
+| `for_each` | The entire resource block                   | Map key or set value (`["prod"]`)      | N resources with a meaningful, stable identity per instance                      |
+| `dynamic`  | One nested block _inside_ a single resource | N/A — not a separate resource instance | A variable number of repeated sub-blocks (e.g. `ingress {}`) within one resource |
 
 **Bidirectional distinction:** `for_each` on a resource creates
-multiple *state entries* — `aws_s3_bucket.env["dev"]` and
+multiple _state entries_ — `aws_s3_bucket.env["dev"]` and
 `aws_s3_bucket.env["prod"]` are two separate objects Terraform tracks
 independently. A `dynamic "ingress"` block inside one
-`aws_security_group` resource creates multiple *nested block instances
-inside one state entry* — there is still only one
+`aws_security_group` resource creates multiple _nested block instances
+inside one state entry_ — there is still only one
 `aws_security_group.app` in state, just with several `ingress` blocks
 inside it.
 
@@ -609,11 +612,11 @@ Expected:
 
 ```json
 {
-    "QueueUrls": [
-        "https://sqs.us-east-2.amazonaws.com/<account-id>/cloudnova-notifications-dlq-0",
-        "https://sqs.us-east-2.amazonaws.com/<account-id>/cloudnova-notifications-dlq-1",
-        "https://sqs.us-east-2.amazonaws.com/<account-id>/cloudnova-notifications-dlq-2"
-    ]
+  "QueueUrls": [
+    "https://sqs.us-east-2.amazonaws.com/<account-id>/cloudnova-notifications-dlq-0",
+    "https://sqs.us-east-2.amazonaws.com/<account-id>/cloudnova-notifications-dlq-1",
+    "https://sqs.us-east-2.amazonaws.com/<account-id>/cloudnova-notifications-dlq-2"
+  ]
 }
 ```
 
@@ -740,7 +743,7 @@ Console → IAM → Users → dev-readonly, billing-auditor
 ### Step 4 — Verify a specific indexed queue with a real round trip
 
 This step strengthens Part A's verification — proving `count` index
-addressing works by sending to *one specific* queue, not just
+addressing works by sending to _one specific_ queue, not just
 confirming three queues exist.
 
 ```bash
@@ -792,7 +795,6 @@ generated inside one resource rather than one resource per rule.
 ingress rules are generated by a `dynamic` block, then apply the
 decision framework to new scenarios and trigger the `count`/`for_each`
 mutual-exclusion error live.
-
 
 ### Step 1 — Create `06-dynamic-sg.tf`
 
@@ -851,7 +853,7 @@ blocks by hand.
 > **Confirm there's still exactly one security group in state**, not
 > two: `terraform state list | grep security_group` shows a single
 > `aws_security_group.app` — the `dynamic` block generated two nested
-> `ingress` blocks *inside* that one resource, not two resources.
+> `ingress` blocks _inside_ that one resource, not two resources.
 
 **Verify:**
 
@@ -863,12 +865,12 @@ Console → EC2 → Security Groups → cloudnova-app-sg → Inbound rules tab
 
 ### Step 3 — Apply the decision framework to three new scenarios
 
-| Scenario | `count`, `for_each`, `dynamic`, or single resource? | Why |
-|---|---|---|
-| 5 identical CloudWatch log groups for 5 microservices with interchangeable names | `count` | Instances are interchangeable; no name carries independent meaning |
-| One S3 bucket per AWS region CloudNova operates in | `for_each` (set of region strings) | Each instance has a meaningful, stable identity (the region) |
-| A security group needing a caller-supplied number of egress rules, in addition to the ingress rules already built | `dynamic` (a second `dynamic "egress"` block) | Still one resource; the variability is in nested blocks, not whole resources |
-| CloudNova's single production VPC | Single resource, no `count`/`for_each`/`dynamic` | There is exactly one; multiplicity constructs exist to avoid repetition, not formalize a singleton |
+| Scenario                                                                                                          | `count`, `for_each`, `dynamic`, or single resource? | Why                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| 5 identical CloudWatch log groups for 5 microservices with interchangeable names                                  | `count`                                             | Instances are interchangeable; no name carries independent meaning                                 |
+| One S3 bucket per AWS region CloudNova operates in                                                                | `for_each` (set of region strings)                  | Each instance has a meaningful, stable identity (the region)                                       |
+| A security group needing a caller-supplied number of egress rules, in addition to the ingress rules already built | `dynamic` (a second `dynamic "egress"` block)       | Still one resource; the variability is in nested blocks, not whole resources                       |
+| CloudNova's single production VPC                                                                                 | Single resource, no `count`/`for_each`/`dynamic`    | There is exactly one; multiplicity constructs exist to avoid repetition, not formalize a singleton |
 
 ### Step 4 — Deliberately trigger the mutual-exclusion error
 
@@ -958,22 +960,22 @@ Expected: all four commands return empty results.
 
 ### Exam Objective Mapping
 
-| Demo concept / command | Exam objective | Notes |
-|---|---|---|
-| `count` and `count.index` | TA-004 Obj 4b | Common exam pattern: "how many resources does this config create?" |
-| `for_each` and `each.key`/`each.value` | TA-004 Obj 4b | Frequently tested against a map input specifically |
-| Splat expression `[*]` | TA-004 Obj 4b (expressions) | Often tested as "what does this output value evaluate to" |
-| `dynamic` blocks vs. `for_each` on a resource | TA-004 Obj 4b | Common trap — conflating "repeats a block" with "repeats a resource" |
-| `count`/`for_each` mutual exclusion | TA-004 Obj 4b | Common trap question — expects you to identify the invalid config |
+| Demo concept / command                        | Exam objective              | Notes                                                                |
+| --------------------------------------------- | --------------------------- | -------------------------------------------------------------------- |
+| `count` and `count.index`                     | TA-004 Obj 4b               | Common exam pattern: "how many resources does this config create?"   |
+| `for_each` and `each.key`/`each.value`        | TA-004 Obj 4b               | Frequently tested against a map input specifically                   |
+| Splat expression `[*]`                        | TA-004 Obj 4b (expressions) | Often tested as "what does this output value evaluate to"            |
+| `dynamic` blocks vs. `for_each` on a resource | TA-004 Obj 4b               | Common trap — conflating "repeats a block" with "repeats a resource" |
+| `count`/`for_each` mutual exclusion           | TA-004 Obj 4b               | Common trap question — expects you to identify the invalid config    |
 
 ### Common Exam Traps
 
-| Scenario | What the task actually requires | Common wrong approach |
-|---|---|---|
-| Exam shows a resource with both `count` and a `for_each`-style map reference | Recognizing this configuration is invalid and would fail `validate` | Assuming Terraform merges the two or that `for_each` "wins" |
-| Exam asks for the resource address of the second instance created by `count = 3` | `resource_type.name[1]` (zero-indexed) | Answering `resource_type.name[2]` (treating it as 1-indexed) |
-| Exam shows `for_each` over a `list(string)` variable directly | Recognizing this is invalid without `toset()` | Assuming `for_each` accepts lists natively like `count` accepts a number |
-| Exam shows a `dynamic` block and asks how many resources exist in state | Recognizing there's still exactly ONE resource — `dynamic` repeats nested blocks, not resources | Assuming a `dynamic` block with `for_each = list of 3` creates 3 resources |
+| Scenario                                                                         | What the task actually requires                                                                 | Common wrong approach                                                      |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Exam shows a resource with both `count` and a `for_each`-style map reference     | Recognizing this configuration is invalid and would fail `validate`                             | Assuming Terraform merges the two or that `for_each` "wins"                |
+| Exam asks for the resource address of the second instance created by `count = 3` | `resource_type.name[1]` (zero-indexed)                                                          | Answering `resource_type.name[2]` (treating it as 1-indexed)               |
+| Exam shows `for_each` over a `list(string)` variable directly                    | Recognizing this is invalid without `toset()`                                                   | Assuming `for_each` accepts lists natively like `count` accepts a number   |
+| Exam shows a `dynamic` block and asks how many resources exist in state          | Recognizing there's still exactly ONE resource — `dynamic` repeats nested blocks, not resources | Assuming a `dynamic` block with `for_each = list of 3` creates 3 resources |
 
 ### Exam Task — Write a complete configuration
 
@@ -989,11 +991,13 @@ one with a `dynamic` block), `variable` (×2 — `environments` map,
 `ingress_rules` list)
 
 **Official documentation:**
+
 - [Count Meta-Argument](https://developer.hashicorp.com/terraform/language/meta-arguments/count)
 - [For_Each Meta-Argument](https://developer.hashicorp.com/terraform/language/meta-arguments/for_each)
 - [`dynamic` Blocks](https://developer.hashicorp.com/terraform/language/expressions/dynamic-blocks)
 
 **What to practise:**
+
 1. Open the `dynamic` Blocks page — confirm what the default iterator
    name is when not explicitly renamed via `iterator`
 2. Write the configuration from scratch without looking at this
@@ -1050,6 +1054,7 @@ resource "aws_security_group" "app" {
 ```
 
 **Arguments you must know without looking up:**
+
 - `count.index` — zero-based, a common exam trap when asked "what is
   the third instance's address"
 - The default `dynamic` block iterator name matches the block's own
@@ -1061,12 +1066,12 @@ resource "aws_security_group" "app" {
 
 ## Troubleshooting
 
-| Error | Cause | Fix |
-|---|---|---|
-| `Error: Invalid for_each argument` | `for_each` value depends on attributes not known until apply | Restructure so `for_each`'s input is a variable, `local`, or data source value known at plan time |
-| `for_each` value is a list, not a map or set | A `list(string)`/`list(object(...))` passed directly to `for_each` | Wrap in `toset()` for a plain string list, or convert to a map keyed by a stable field |
-| Splat expression returns an empty list unexpectedly | `count`/`for_each` input evaluated to empty | Check the actual value with `terraform console` |
-| `dynamic` block generates zero nested blocks | Its `for_each` input is an empty list/map | Confirm the source variable actually has entries — the resource itself still exists even with zero nested blocks |
+| Error                                               | Cause                                                              | Fix                                                                                                              |
+| --------------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `Error: Invalid for_each argument`                  | `for_each` value depends on attributes not known until apply       | Restructure so `for_each`'s input is a variable, `local`, or data source value known at plan time                |
+| `for_each` value is a list, not a map or set        | A `list(string)`/`list(object(...))` passed directly to `for_each` | Wrap in `toset()` for a plain string list, or convert to a map keyed by a stable field                           |
+| Splat expression returns an empty list unexpectedly | `count`/`for_each` input evaluated to empty                        | Check the actual value with `terraform console`                                                                  |
+| `dynamic` block generates zero nested blocks        | Its `for_each` input is an empty list/map                          | Confirm the source variable actually has entries — the resource itself still exists even with zero nested blocks |
 
 ---
 
@@ -1174,6 +1179,7 @@ change both `ingress.value` references to `rule.value`.
 </details>
 
 **Cleanup:**
+
 ```bash
 cd src/break-fix/
 terraform destroy -auto-approve
@@ -1189,7 +1195,7 @@ cd ../..
 `count` fits when instances are truly interchangeable and position carries no meaning. It's the wrong call the moment an instance has a real identity worth preserving, because removing an item from the middle of a `count`-driven list shifts every subsequent index, and Terraform plans to destroy and recreate every instance after the removed one — even though their actual configuration didn't change. `for_each` avoids this since each instance is addressed by its own stable key.
 
 **Q2. How do you explain the difference between `for_each` on a resource and a `dynamic` block to someone who's only seen one of the two?**
-`for_each` on a resource block creates multiple independent state entries — you can destroy one without touching the others. A `dynamic` block repeats a *nested configuration block inside a single resource* — there's still exactly one resource in state; you're just avoiding writing out N copies of a nested block (like `ingress {}`) by hand. If someone says "I used `dynamic` to create three separate S3 buckets," that's not possible — `dynamic` can't create separate top-level resources, only repeated nested blocks within one.
+`for_each` on a resource block creates multiple independent state entries — you can destroy one without touching the others. A `dynamic` block repeats a _nested configuration block inside a single resource_ — there's still exactly one resource in state; you're just avoiding writing out N copies of a nested block (like `ingress {}`) by hand. If someone says "I used `dynamic` to create three separate S3 buckets," that's not possible — `dynamic` can't create separate top-level resources, only repeated nested blocks within one.
 
 **Q3. A teammate's PR uses `for_each = var.subnet_ids` where `subnet_ids` is `type = list(string)`. What's your review comment?**
 It fails validation — `for_each` requires a map or a set, not a list. The review comment: wrap it as `toset(var.subnet_ids)`, and flag that if `subnet_ids` can ever contain duplicates, `toset()` will silently collapse them — worth confirming that's acceptable.
@@ -1239,14 +1245,14 @@ Because "pick one automatically" would be a silent, implicit decision about addr
 
 ## Quick Commands Reference
 
-| Command | Description |
-|---|---|
-| `count.index` | Zero-based index of the current instance in a `count`-driven resource |
-| `each.key` / `each.value` | Current key/value of the current instance in a `for_each`-driven resource |
-| `toset(list)` | Converts a list to a set — required for `for_each` on a plain list |
-| `resource[*].attr` | Splat expression — collects one attribute across every instance |
-| `terraform state list \| grep TYPE` | Confirms how many actual resources exist vs. how many nested blocks a `dynamic` block generated |
-| `aws sqs send-message` / `receive-message` | Verifies a specific, indexed queue round-trips a real message |
+| Command                                    | Description                                                                                     |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `count.index`                              | Zero-based index of the current instance in a `count`-driven resource                           |
+| `each.key` / `each.value`                  | Current key/value of the current instance in a `for_each`-driven resource                       |
+| `toset(list)`                              | Converts a list to a set — required for `for_each` on a plain list                              |
+| `resource[*].attr`                         | Splat expression — collects one attribute across every instance                                 |
+| `terraform state list \| grep TYPE`        | Confirms how many actual resources exist vs. how many nested blocks a `dynamic` block generated |
+| `aws sqs send-message` / `receive-message` | Verifies a specific, indexed queue round-trips a real message                                   |
 
 ---
 
@@ -1610,10 +1616,10 @@ apply — it repeats nested blocks, not whole resources like buckets.
 
 Score guide:
 
-| Score | Action |
-|---|---|
-| 15-16/16 | Import Anki cards, move to Demo 11 |
-| 13-14/16 | Review the wrong answers, then proceed |
-| 11-12/16 | Re-read the relevant sections, retry those questions |
+| Score       | Action                                                           |
+| ----------- | ---------------------------------------------------------------- |
+| 15-16/16    | Import Anki cards, move to Demo 11                               |
+| 13-14/16    | Review the wrong answers, then proceed                           |
+| 11-12/16    | Re-read the relevant sections, retry those questions             |
 | Below 11/16 | Re-read the full demo and redo the walkthrough before proceeding |
 ````

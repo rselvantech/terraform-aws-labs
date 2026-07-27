@@ -51,6 +51,33 @@ a shared remote backend with locking.
 
 ---
 
+## How This Demo's Pieces Fit Together
+
+**The AWS solution being built:** one production-grade S3 bucket
+(`aws_s3_bucket` + 3 standalone v6 configuration resources), plus a
+second, separate S3 bucket that holds Terraform's own state — created
+manually in Part B specifically because it can't be created by the
+same Terraform run that will use it as a backend.
+
+**How the three Parts connect:** Part A builds and verifies the app
+bucket entirely on **local** state — this is deliberate, so the demo
+first proves the S3 resource pattern works before introducing any
+state-location complexity at all. Part B doesn't touch the app bucket
+again; it exists purely to migrate *where* Part A's state lives, from
+local disk to the new remote backend — the app bucket itself is
+completely unaffected by this migration, only Terraform's own
+bookkeeping about it moves. Part C then uses that now-remote state to
+demonstrate drift: a manual Console change to the *same* app bucket
+from Part A, detected and reconciled using the state CLI commands Part
+B's migration made meaningful (`state list`/`state show` reading from
+S3, not local disk).
+
+By the end, there are two AWS S3 buckets: the app bucket (Part A's
+subject throughout) and the state bucket (Part B's subject, holding a
+record of everything Part A and Part C did to the app bucket).
+
+---
+
 ## Prerequisites
 
 ### Knowledge
@@ -1096,7 +1123,7 @@ the state bucket in the Console, add `backend.tf`, and run
 `terraform init -migrate-state` to copy local state to S3. At the end
 of Part B, state is shared and locked — ready for team use and CI/CD.
 
-### Step 8 — Create the state bucket in AWS Console
+### Step 1 — Create the state bucket in AWS Console
 
 The state bucket is created in the Console — not with Terraform.Reason: you cannot use Terraform to create the bucket that will store
 Terraform's own state. The chicken-and-egg problem..Terraform needs the bucket to already exist before
@@ -1141,14 +1168,15 @@ Console → S3 → tfstate-cloudnova-163125980376-us-east-2
 
 ---
 
-### Step 9 — Add backend.tf
+### Step 2 — Add backend.tf
 
 **What this file does in this demo:** adds an S3 backend configuration
 to the Terraform project. Once initialised, all state reads and writes go
 to S3 instead of the local disk. Contains a second `terraform {}` block —
 valid because Terraform merges all `.tf` files (explained in Concepts above).
 
-**backend.tf:**
+
+Create a file **backend.tf** and add the below content:
 
 ```hcl
 terraform {
@@ -1181,7 +1209,7 @@ terraform {
 
 ---
 
-### Step 10 — Migrate state to S3
+### Step 3 — Migrate state to S3
 
 ```bash
 terraform init -migrate-state
@@ -1243,7 +1271,7 @@ Console → S3 → state bucket → terraform.tfstate
 
 ---
 
-### Step 11 — Verify remote state works
+### Step 4 — Verify remote state works
 
 ```bash
 # Terraform now reads state from S3
@@ -1271,7 +1299,7 @@ change a resource in the Console, detect the change with Terraform, and
 reconcile. At the end of Part C you have seen the full drift cycle:
 introduce → detect → reconcile.
 
-### Step 12 — State CLI commands
+### Step 1 — State CLI commands
 
 ```bash
 # List all resources Terraform currently manages
@@ -1301,7 +1329,7 @@ terraform output -json                 # all outputs as JSON
 
 ---
 
-### Step 13 — Introduce drift in Console
+### Step 2 — Introduce drift in Console
 Drift is the silent divergence between what Terraform manages and what
 actually exists in AWS. Let's make it tangible.
 
@@ -1316,7 +1344,7 @@ Console → S3 → General purpose buckets → cloudnova-dev-app-xxxxxxxx
 
 ---
 
-### Step 14 — Detect the drift
+### Step 3 — Detect the drift
 
 **Two ways to see drift — understanding the difference:**
 
@@ -1365,7 +1393,7 @@ discard it to leave the state as-is.
 
 ---
 
-### Step 15 — Reconcile — remove the drift
+### Step 4 — Reconcile — remove the drift
 
 **Reconcile — two choices:**
 
@@ -1405,7 +1433,7 @@ Console → S3 → cloudnova-dev-app-xxxxxxxx → Properties → Tags
 > objects are free, but good hygiene means destroying demo resources
 > completely.
 
-### Step 16 — Destroy app resources
+### Step 1 — Destroy app resources
 
 ```bash
 terraform destroy
@@ -1435,7 +1463,7 @@ Console → S3 → Buckets
   → cloudnova-dev-app-xxxxxxxx: GONE ✅
 ```
 
-### Step 17 — Delete backend.tf and the state bucket
+### Step 2 — Delete backend.tf and the state bucket
 
 The state bucket was created outside Terraform (Console), so it must be
 deleted outside Terraform (Console) too.
@@ -1513,10 +1541,10 @@ Console → S3 → Buckets
 | `aws_s3_bucket` + 3 standalone config resources | TA-004 Obj 4 — Resource configuration | v6 pattern — no inline `versioning {}` etc. |
 | `depends_on` meta-argument | TA-004 Obj 4 | S3 eventual consistency — implicit reference alone is insufficient |
 | State purpose, `terraform.tfstate` | TA-004 Obj 2d — State purpose | "What happens if you delete terraform.tfstate?" → Terraform loses track of everything; next apply recreates it all |
-| `backend "s3"`, remote state | TA-004 Obj 5a — Remote backends | Team collaboration, no local state loss, CI/CD integration |
-| `use_lockfile = true` | TA-004 Obj 5b — State locking | See deprecation note in Concepts — DynamoDB no longer required |
+| `backend "s3"`, remote state | TA-004 Obj 6c — Configure remote state using the backend block | Team collaboration, no local state loss, CI/CD integration |
+| `use_lockfile = true` | TA-004 Obj 6b — Describe state locking | See deprecation note in Concepts — DynamoDB no longer required |
 | `terraform init -migrate-state` | TA-004 Obj 3a–3e — Core workflow | Prompts for confirmation before copying, never automatic |
-| `terraform plan -refresh-only` / `apply -refresh-only` | TA-004 Obj 3 — Drift detection | Refresh-only isolates drift detection from pending config changes |
+| `terraform plan -refresh-only` / `apply -refresh-only` | TA-004 Obj 6d — Manage resource drift and Terraform state | Refresh-only isolates drift detection from pending config changes |
 
 ### Common Exam Traps
 
@@ -1788,14 +1816,14 @@ patterns for CI/CD.
 "In AWS provider v6 you write versioning {} inside aws_s3_bucket. What happens?","terraform validate errors: An argument named versioning is not expected here. v6 removed all inline S3 blocks. Fix: use aws_s3_bucket_versioning standalone resource.","demo01,s3,v6,ta004-obj2"
 "What are the four standalone resources for a production-grade S3 bucket in v6?","1. aws_s3_bucket — the bucket. 2. aws_s3_bucket_versioning — version history. 3. aws_s3_bucket_server_side_encryption_configuration — AES256 or KMS. 4. aws_s3_bucket_public_access_block — all four booleans true.","demo01,s3,v6,ta004-obj4"
 "What does default_tags in the AWS provider block do?","Tags in default_tags are automatically merged into every resource created by that provider. No need to write tags = local.common_tags in every resource block. Resource-level tags merge on top — in conflicts the resource-level tag wins.","demo01,provider,tags,ta004-obj2"
-"Why must the S3 state bucket be created outside Terraform?","Chicken-and-egg: Terraform needs the state bucket to exist before it can initialise the backend. You cannot use Terraform to create the bucket that stores Terraform's own state. Create via Console first.","demo01,state,backend,ta004-obj5"
+"Why must the S3 state bucket be created outside Terraform?","Chicken-and-egg: Terraform needs the state bucket to exist before it can initialise the backend. You cannot use Terraform to create the bucket that stores Terraform's own state. Create via Console first.","demo01,state,backend,ta004-obj6a"
 "What does terraform init -migrate-state do?","Copies existing local state to the newly configured remote backend. Prompts for confirmation. Local terraform.tfstate becomes stale backup. S3 copy is now authoritative for all future applies.","demo01,state,backend,ta004-obj5,live-verified"
-"What is state locking and why is it needed?","Prevents two simultaneous terraform apply runs from corrupting state. Without locking: two applies read same state, both write results, one overwrites the other — resources exist in AWS but disappear from state. Locking ensures only one apply modifies state at a time.","demo01,state,locking,ta004-obj5b"
-"Is DynamoDB required for S3 state locking in Terraform 1.11+?","No. use_lockfile = true uses S3 conditional writes to create a .tfstate.tflock file. dynamodb_table is deprecated in v1.11. No DynamoDB table, no extra cost, no extra service dependency.","demo01,state,locking,ta004-obj5b,needs-verification"
-"How does S3 native locking work technically?","S3 conditional write attempts to create terraform.tfstate.tflock — only succeeds if the file does not already exist (atomic operation). If file exists: another apply is running — error. When apply finishes: .tflock file deleted. Lock released.","demo01,state,locking,ta004-obj5b,live-verified"
+"What is state locking and why is it needed?","Prevents two simultaneous terraform apply runs from corrupting state. Without locking: two applies read same state, both write results, one overwrites the other — resources exist in AWS but disappear from state. Locking ensures only one apply modifies state at a time.","demo01,state,locking,ta004-obj6b"
+"Is DynamoDB required for S3 state locking in Terraform 1.11+?","No. use_lockfile = true uses S3 conditional writes to create a .tfstate.tflock file. dynamodb_table is deprecated in v1.11. No DynamoDB table, no extra cost, no extra service dependency.","demo01,state,locking,ta004-obj6b,needs-verification"
+"How does S3 native locking work technically?","S3 conditional write attempts to create terraform.tfstate.tflock — only succeeds if the file does not already exist (atomic operation). If file exists: another apply is running — error. When apply finishes: .tflock file deleted. Lock released.","demo01,state,locking,ta004-obj6b,live-verified"
 "Can you lock local state? Why or why not?","No. Locking only makes sense for shared remote state. A lock on your local machine protects nothing — no other machine can access your local file. State locking is a coordination mechanism between multiple machines.","demo01,state,locking,ta004-obj5b"
-"What does terraform plan -refresh-only do?","Reads actual current state from AWS via provider Read() API, compares to last known state in .tfstate, shows what changed outside Terraform. Makes ZERO changes to infrastructure or state. Use to detect drift.","demo01,drift,plan,ta004-obj3,live-verified"
-"After detecting drift with terraform plan -refresh-only, what are your two choices?","1. terraform apply -refresh-only: accepts drift into state — keeps the manual change. 2. terraform apply: removes drift — reconciles AWS back to desired state in .tf files. Choice 2 is correct production behaviour (Terraform is source of truth).","demo01,drift,apply,ta004-obj3,live-verified"
+"What does terraform plan -refresh-only do?","Reads actual current state from AWS via provider Read() API, compares to last known state in .tfstate, shows what changed outside Terraform. Makes ZERO changes to infrastructure or state. Use to detect drift.","demo01,drift,plan,ta004-obj6d,live-verified"
+"After detecting drift with terraform plan -refresh-only, what are your two choices?","1. terraform apply -refresh-only: accepts drift into state — keeps the manual change. 2. terraform apply: removes drift — reconciles AWS back to desired state in .tf files. Choice 2 is correct production behaviour (Terraform is source of truth).","demo01,drift,apply,ta004-obj6d,live-verified"
 "How much does AES256 (SSE-S3) encryption cost on S3?","Always free — AWS absorbs the cost of S3-managed keys. SSE-KMS (customer-managed keys) is paid: $0.03 per 10,000 requests + $1/month per CMK. Use AES256 unless you need key rotation audit trails.","demo01,s3,encryption"
 "What does S3 versioning on the state bucket give you?","Every terraform apply creates a new version of the state file. Recovery procedure: Console → state bucket → terraform.tfstate → Show versions → download older version → terraform state push terraform.tfstate. This is the undo button for state corruption.","demo01,state,versioning"
 "Two terraform {} blocks exist — versions.tf and backend.tf. Is this valid?","Yes. Terraform merges all .tf files in a directory. backend {} in backend.tf merges with required_version and required_providers in versions.tf. Only restriction: same setting cannot be declared twice.","demo01,hcl,backend,ta004-obj2"
