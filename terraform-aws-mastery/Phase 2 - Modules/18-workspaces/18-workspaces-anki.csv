@@ -1,0 +1,10 @@
+#deck:Terraform AWS Mastery::Phase 2 - Modules::18-workspaces
+#separator:Comma
+#columns:Front,Back,Tags
+"What does a CLI workspace actually isolate?","State, not configuration — every workspace in a working directory shares the exact same .tf files. Only the tracked state, and any workspace-dependent value, differs between workspaces.","demo18,workspaces"
+"What does terraform.workspace return?","The name of the currently active workspace, as a plain string usable anywhere in configuration — not a variable, not a resource attribute, a built-in reference.","demo18,workspaces"
+"Does creating a new workspace copy or inherit anything from an existing workspace's state?","No — a new workspace starts with completely empty state, exactly as if init had just run in a brand-new directory.","demo18,workspaces,gotcha"
+"Is a CLI workspace the same thing as an HCP Terraform workspace?","No — they share a name but are genuinely different features. HCP Terraform workspaces add remote runs, variables, VCS integration, policy enforcement, and team access; the CLI feature has none of that.","demo18,workspaces,gotcha"
+"When would you use for_each over a map instead of CLI workspaces, for a similar-looking multi-environment problem?","When you want all instances to exist simultaneously, managed by one apply, in one state file. Workspaces instead produce one resource per apply, repeated separately per workspace, at potentially different times.","demo18,workspaces,foreach"
+"What happens if you try to delete the currently-selected workspace?","Terraform refuses — you must select a different workspace (commonly default) before deleting the one you were standing in.","demo18,workspaces,gotcha"
+"Does the official TA-004 exam have a dedicated numbered objective for the CLI terraform workspace command?","No — domain 7 covers import/state CLI/logging, and domain 8 covers the separate HCP Terraform workspace concept. The CLI workspace command itself has no dedicated objective, though the naming collision with domain 8 is genuinely testable.","demo18,workspaces,examscope"

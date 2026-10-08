@@ -1,0 +1,10 @@
+#deck:Terraform AWS Mastery::Phase 2 - Modules::16-vpc-module
+#separator:Comma
+#columns:Front,Back,Tags
+"How does the terraform-aws-modules/vpc/aws module encode the public vs private subnet distinction?","Through two separate list inputs, public_subnets and private_subnets — the distinction comes from which list a CIDR block is placed in, not from any flag on the CIDR or subnet itself.","demo16,vpc,modules,ta004-obj5c"
+"What actually makes a subnet 'public' at the AWS level?","Its associated route table's 0.0.0.0/0 route points at an Internet Gateway. A private subnet's route table instead points 0.0.0.0/0 at a NAT Gateway. It's a routing outcome, not a subnet attribute.","demo16,vpc,networking"
+"What does enable_nat_gateway = true actually cost?","It's billed hourly (~$0.045/hr) simply for existing, plus a per-GB charge for data processed — regardless of whether anything is actively using it. Not free-tier eligible. Its attached Elastic IP bills separately too (~$0.005/hr, since February 2024), whether attached or idle.","demo16,vpc,cost,gotcha"
+"What does single_nat_gateway = true mean, versus one NAT Gateway per AZ?","One shared NAT Gateway serves every private subnet regardless of AZ count — cheaper, but a single point of failure for outbound traffic, versus one-per-AZ which costs more but is more resilient.","demo16,vpc,cost"
+"Why must azs, public_subnets, and private_subnets all have matching list lengths?","The module creates one subnet per AZ per list — a length mismatch across these three lists produces an index-based error at plan time.","demo16,vpc,break-fix"
+"If enable_nat_gateway is left at its default, what internet access do private subnets have?","None — enable_nat_gateway defaults to false, meaning private subnets have zero outbound internet route unless explicitly enabled.","demo16,vpc,networking,ta004-obj5c"
+"Why is module.vpc.public_subnets a list rather than a single value?","Because the module creates one subnet per entry in the public_subnets input list — its output correspondingly returns an ordered list of the resulting subnet IDs, one per AZ.","demo16,vpc,outputs"

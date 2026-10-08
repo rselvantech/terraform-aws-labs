@@ -1,0 +1,10 @@
+#deck:Terraform AWS Mastery::Phase 2 - Modules::17-three-tier-modules
+#separator:Comma
+#columns:Front,Back,Tags
+"What does for_each on a module block actually produce?","One independent module instance per key in the given map — not several copy-pasted module blocks. Each instance has its own full set of internal resources.","demo17,modules,foreach,ta004-obj5c"
+"How do you address one specific instance of a for_each'd module?","module.<name>[\"<key>\"].<output> — e.g. module.tier_sg[\"web\"].id. Referencing it without a key is invalid once for_each is present.","demo17,modules,foreach,ta004-obj5c"
+"How do you build one combined output covering every instance of a for_each'd module?","A for expression over the module itself: { for k, v in module.tier_sg : k => v.id } — one line instead of a separate output block per key.","demo17,modules,foreach,ta004-obj5c"
+"Do independent instances of a for_each'd module create in a fixed, sequential order?","No — instances with no dependency on each other create in parallel. Order is only forced when one instance's configuration actually depends on another's output.","demo17,modules,foreach"
+"What happens to existing for_each'd module instances when you add a new key to the driving map?","Nothing changes for the existing instances — Terraform plans exactly one new resource for the new key, since each instance's identity is tied to its own key, not its position or count.","demo17,modules,foreach,ta004-obj5c"
+"How does one module's output get passed into a second module's input?","Directly, as a plain reference — e.g. vpc_id = module.vpc.vpc_id inside a second module's call. No manual copying of the value is needed.","demo17,modules,composition"
+"Why does this demo scope each tier's security group to the VPC CIDR instead of chaining tier-to-tier?","Chaining (app only accepting traffic specifically from web's security group) is more secure but requires one for_each instance to reference a specific sibling instance's output — a more complex pattern kept separate from the core for_each-on-modules lesson.","demo17,modules,foreach,gotcha"

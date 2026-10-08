@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ui
+  template:
+    metadata:
+      labels:
+        app: ui
+    spec:
+      containers:
+        - name: ui
+          image: ${UI_IMAGE}
+          # ↑ filled from Terraform's repository_urls output in Step
+          # 12a — 22c's persistent ECR repo, not the public gallery
+          ports:
+            - containerPort: 8080

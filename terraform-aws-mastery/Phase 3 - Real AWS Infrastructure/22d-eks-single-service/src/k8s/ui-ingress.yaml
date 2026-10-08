@@ -1,0 +1,57 @@
+apiVersion: eks.amazonaws.com/v1
+kind: IngressClassParams
+metadata:
+  name: alb-cloudnova
+spec:
+  scheme: internet-facing
+  # ↑ added this session (VERIFY 3) — AWS's own official example sets
+  # scheme here, on IngressClassParams, not solely via an Ingress
+  # annotation
+  certificateARNs:
+    - "${CERT_ARN}"
+    # ↑ filled from Terraform's certificate_arn output in Step 12a
+
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: alb-cloudnova
+spec:
+  controller: eks.amazonaws.com/alb
+  parameters:
+    apiGroup: eks.amazonaws.com
+    kind: IngressClassParams
+    name: alb-cloudnova
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ui
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # ↑ left in place as a harmless, belt-and-suspenders duplicate of
+    # IngressClassParams's own scheme field above — the annotation's
+    # own behavior under Auto Mode isn't confirmed either way, so the
+    # IngressClassParams field above is what this demo actually relies
+    # on (VERIFY 3)
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/success-codes: "200,303"
+    # ↑ the UI's root path answers 303 → /home, so the target group
+    # must accept 303 (VERIFY 5). The annotation name is
+    # success-codes, not healthcheck-success-codes — the latter is not
+    # a documented AWS Load Balancer Controller annotation and is
+    # silently ignored. [UNVERIFIED under Auto Mode] Step 14 confirms
+    # the matcher actually changed.
+spec:
+  ingressClassName: alb-cloudnova
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ui
+                port:
+                  number: 80

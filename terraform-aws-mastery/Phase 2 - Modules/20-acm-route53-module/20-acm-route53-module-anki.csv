@@ -1,0 +1,8 @@
+#deck:Terraform AWS Mastery::Phase 2 - Modules::20-acm-route53-module
+#separator:Comma
+#columns:Front,Back,Tags
+"Why is DNS validation preferred over email validation for infrastructure-as-code?","DNS validation only requires a DNS record to exist, which Terraform can create itself with write access to the zone. Email validation requires a human to receive a message and click a link — something no automated apply can do.","demo20,acm,gotcha"
+"What does wait_for_validation = true actually change about terraform apply?","It blocks apply from completing until AWS confirms the certificate is genuinely ISSUED, not just requested. Without it, apply can complete while the certificate is still PENDING_VALIDATION.","demo20,acm,ta004"
+"What does data \"aws_route53_zone\" actually do?","Reads an already-existing hosted zone's real attributes (most importantly zone_id) without creating, modifying, or destroying the zone itself — the same data vs. resource distinction from Demo 08, applied to a real zone this series doesn't own.","demo20,acm,route53,ta004"
+"Why does this demo create a placeholder DNS record instead of leaving the subdomain unresolvable until Demo 22?","A record resolving to something real is verifiable right now via dig — an unresolvable subdomain gives no signal whether the configuration actually worked or something is silently broken.","demo20,route53,gotcha"
+"Does destroying this demo's resources ever touch the rselvantech.com hosted zone itself?","No — only the certificate and the two records this demo created (validation + placeholder) are destroyed. The zone itself is read-only to this series and managed entirely outside it.","demo20,route53,acm,cleanup"
